@@ -171,8 +171,9 @@ async function fetchUSGSData() {
             const batch = batches[i];
             const stateParam = batch.join(',');
 
-            // Get sites with current streamflow data
-            const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${stateParam}&parameterCd=00060,00065&siteStatus=active`;
+            // Get sites with current water data (multiple parameters to catch more sites)
+            // 00060=Discharge, 00065=Gage height, 00010=Temperature, 00045=Precipitation
+            const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${stateParam}&parameterCd=00060,00065,00010,00045&siteStatus=active`;
 
             console.log(`Fetching batch ${i + 1}/${batches.length}: ${batch.join(', ')}`);
 
@@ -448,6 +449,36 @@ function showSiteDetails(site, source) {
         }
 
         html += `<tr><td colspan="2" style="padding-top: 10px;"><a href="https://waterdata.usgs.gov/monitoring-location/${site.id}/" target="_blank" style="color: #667eea;">View on USGS Website →</a></td></tr>`;
+        html += '</table>';
+
+        // Add chart container for USGS data
+        html += `
+            <div style="margin-top: 20px;">
+                <h4 style="margin-bottom: 10px; color: #667eea;">7-Day Water Data</h4>
+                <div id="chartLoading" style="text-align: center; padding: 20px; color: #666;">
+                    <div class="spinner" style="display: inline-block; margin-bottom: 10px;"></div>
+                    <p>Loading chart data...</p>
+                </div>
+                <canvas id="dataChart" style="display: none; max-height: 400px;"></canvas>
+            </div>
+        `;
+
+        content.innerHTML = html;
+        panel.classList.remove('hidden');
+
+        // Fetch and display chart data
+        fetchUSGSTimeSeries(site.id).then(data => {
+            if (data && data.length > 0) {
+                displayUSGSChart(data);
+            } else {
+                document.getElementById('chartLoading').innerHTML = '<p style="color: #666; font-style: italic;">No time series data available for the last 7 days</p>';
+            }
+        }).catch(error => {
+            console.error('Error loading chart data:', error);
+            document.getElementById('chartLoading').innerHTML = '<p style="color: #dc3545; font-style: italic;">Error loading chart data</p>';
+        });
+
+        return;
     } else {
         // NOAA gauge details
         const categoryColors = {
@@ -514,6 +545,178 @@ function showSiteDetails(site, source) {
 // Close info panel
 function closeInfoPanel() {
     document.getElementById('infoPanel').classList.add('hidden');
+}
+
+// Fetch USGS time series data for charting
+async function fetchUSGSTimeSeries(siteId) {
+    try {
+        // Calculate date range (last 7 days)
+        const endDate = new Date();
+        const startDate = new Date();
+        startDate.setDate(startDate.getDate() - 7);
+
+        const startStr = startDate.toISOString().split('T')[0];
+        const endStr = endDate.toISOString().split('T')[0];
+
+        // Fetch all available parameters for the last 7 days
+        const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${siteId}&startDT=${startStr}&endDT=${endStr}`;
+
+        console.log('Fetching time series data:', url);
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch time series: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (!data.value || !data.value.timeSeries || data.value.timeSeries.length === 0) {
+            return [];
+        }
+
+        // Parse time series data
+        const timeSeriesData = [];
+
+        data.value.timeSeries.forEach(series => {
+            const variable = series.variable;
+            const variableName = variable.variableName;
+            const variableCode = variable.variableCode[0].value;
+            const unit = variable.unit?.unitCode || '';
+
+            if (series.values && series.values[0] && series.values[0].value) {
+                const values = series.values[0].value;
+
+                const dataPoints = values
+                    .filter(v => v.value !== '-999999' && !isNaN(parseFloat(v.value)))
+                    .map(v => ({
+                        time: new Date(v.dateTime),
+                        value: parseFloat(v.value)
+                    }));
+
+                if (dataPoints.length > 0) {
+                    timeSeriesData.push({
+                        variableName,
+                        variableCode,
+                        unit,
+                        data: dataPoints
+                    });
+                }
+            }
+        });
+
+        return timeSeriesData;
+    } catch (error) {
+        console.error('Error fetching time series:', error);
+        return [];
+    }
+}
+
+// Display USGS chart
+let currentChart = null;
+
+function displayUSGSChart(timeSeriesData) {
+    const chartCanvas = document.getElementById('dataChart');
+    const chartLoading = document.getElementById('chartLoading');
+
+    if (!chartCanvas) return;
+
+    // Destroy previous chart if it exists
+    if (currentChart) {
+        currentChart.destroy();
+        currentChart = null;
+    }
+
+    // Hide loading, show chart
+    chartLoading.style.display = 'none';
+    chartCanvas.style.display = 'block';
+
+    // Prepare datasets
+    const datasets = timeSeriesData.map((series, index) => {
+        const colors = [
+            'rgb(54, 162, 235)',   // Blue for first parameter
+            'rgb(255, 99, 132)',   // Red for second
+            'rgb(75, 192, 192)',   // Teal for third
+            'rgb(255, 159, 64)',   // Orange for fourth
+        ];
+
+        return {
+            label: `${series.variableName} (${series.unit})`,
+            data: series.data.map(d => ({ x: d.time, y: d.value })),
+            borderColor: colors[index % colors.length],
+            backgroundColor: colors[index % colors.length].replace('rgb', 'rgba').replace(')', ', 0.1)'),
+            tension: 0.1,
+            yAxisID: `y${index}`,
+        };
+    });
+
+    // Create Y axes configuration
+    const yAxes = {};
+    timeSeriesData.forEach((series, index) => {
+        yAxes[`y${index}`] = {
+            type: 'linear',
+            display: true,
+            position: index === 0 ? 'left' : 'right',
+            title: {
+                display: true,
+                text: `${series.variableName} (${series.unit})`
+            },
+            grid: {
+                drawOnChartArea: index === 0,
+            }
+        };
+    });
+
+    // Create chart
+    const ctx = chartCanvas.getContext('2d');
+    currentChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            label += context.parsed.y.toFixed(2);
+                            return label;
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'day',
+                        displayFormats: {
+                            day: 'MMM d'
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: 'Date'
+                    }
+                },
+                ...yAxes
+            }
+        }
+    });
 }
 
 // Clear map markers

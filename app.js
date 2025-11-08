@@ -78,6 +78,7 @@ function populateStateFilter() {
 function attachEventListeners() {
     document.getElementById('showUSGS').addEventListener('change', toggleUSGSLayer);
     document.getElementById('showNOAA').addEventListener('change', toggleNOAALayer);
+    document.getElementById('showForecastOnly').addEventListener('change', toggleForecastFilter);
     document.getElementById('refreshData').addEventListener('click', loadData);
     document.getElementById('clearMap').addEventListener('click', clearMap);
     document.getElementById('stateFilter').addEventListener('change', filterByState);
@@ -100,6 +101,11 @@ function toggleNOAALayer(e) {
     } else {
         map.removeLayer(noaaLayer);
     }
+}
+
+// Toggle forecast-only filter
+function toggleForecastFilter() {
+    displayNOAAMarkers();
 }
 
 // Show loading indicator
@@ -373,7 +379,15 @@ function displayUSGSMarkers() {
 function displayNOAAMarkers() {
     noaaLayer.clearLayers();
 
-    noaaData.forEach(gauge => {
+    // Check if forecast-only filter is enabled
+    const forecastOnly = document.getElementById('showForecastOnly')?.checked || false;
+
+    // Filter data based on forecast-only setting
+    const filteredData = forecastOnly ? noaaData.filter(g => g.hasForecast) : noaaData;
+
+    console.log(`Displaying ${filteredData.length} NOAA gauges (forecast-only: ${forecastOnly}, total: ${noaaData.length})`);
+
+    filteredData.forEach(gauge => {
         // Use different color for gauges with forecasts
         const hasForecast = gauge.hasForecast;
         const fillColor = hasForecast ? '#dc3545' : '#6c757d'; // Red for forecast, gray for obs-only

@@ -30,7 +30,11 @@
                 </label>
                 <label>
                     <input type="checkbox" id="showNOAA" checked>
-                    NOAA Forecasts
+                    NOAA Gauges
+                </label>
+                <label>
+                    <input type="checkbox" id="showForecastOnly">
+                    Forecast Only
                 </label>
             </div>
 
@@ -71,9 +75,10 @@
     <!-- Leaflet MarkerCluster JS -->
     <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
 
-    <!-- Chart.js for data visualization -->
+    <!-- Chart.js -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
 
     <script src="app.js"></script>
 </body>

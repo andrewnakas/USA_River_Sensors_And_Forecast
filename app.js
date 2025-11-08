@@ -808,43 +808,59 @@ function displayNOAAChart(data, site) {
     chartLoading.style.display = 'none';
     chartCanvas.style.display = 'block';
 
-    // Combine observed and forecast for continuity
-    const allObserved = data.observed.map(d => ({ x: d.time, y: d.stage }));
-    const allForecast = data.forecast.map(d => ({ x: d.time, y: d.stage }));
+    console.log(`NOAA Chart Data - Observed: ${data.observed.length} points, Forecast: ${data.forecast.length} points`);
 
-    // Create datasets
+    // Create combined dataset for better visualization
     const datasets = [];
 
-    // Observed data (blue line)
-    if (allObserved.length > 0) {
-        datasets.push({
-            label: `Observed Stage (${data.observedUnits.primary})`,
-            data: allObserved,
-            borderColor: 'rgb(54, 162, 235)',
-            backgroundColor: 'rgba(54, 162, 235, 0.1)',
-            tension: 0.1,
-            pointRadius: 0,
-            borderWidth: 2
-        });
+    // Combine observed and forecast data with a connection point
+    if (data.observed.length > 0 || data.forecast.length > 0) {
+        // Get the last observed point
+        const lastObserved = data.observed.length > 0 ? data.observed[data.observed.length - 1] : null;
+
+        // Observed data (blue line)
+        if (data.observed.length > 0) {
+            const observedData = data.observed.map(d => ({ x: d.time, y: d.stage }));
+
+            datasets.push({
+                label: `Observed Stage (${data.observedUnits.primary})`,
+                data: observedData,
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                tension: 0.1,
+                pointRadius: 1,
+                borderWidth: 2,
+                fill: false
+            });
+        }
+
+        // Forecast data (red dashed line) - start from last observed for continuity
+        if (data.forecast.length > 0) {
+            const forecastData = data.forecast.map(d => ({ x: d.time, y: d.stage }));
+
+            // Add last observed point to start of forecast for continuity
+            if (lastObserved && forecastData.length > 0) {
+                forecastData.unshift({ x: lastObserved.time, y: lastObserved.stage });
+            }
+
+            datasets.push({
+                label: `Forecast Stage (${data.forecastUnits.primary})`,
+                data: forecastData,
+                borderColor: 'rgb(255, 99, 132)',
+                backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                borderDash: [5, 5],
+                tension: 0.1,
+                pointRadius: 1,
+                borderWidth: 2,
+                fill: false
+            });
+        }
     }
 
-    // Forecast data (red dashed line)
-    if (allForecast.length > 0) {
-        datasets.push({
-            label: `Forecast Stage (${data.forecastUnits.primary})`,
-            data: allForecast,
-            borderColor: 'rgb(255, 99, 132)',
-            backgroundColor: 'rgba(255, 99, 132, 0.1)',
-            borderDash: [5, 5],
-            tension: 0.1,
-            pointRadius: 0,
-            borderWidth: 2
-        });
-    }
-
-    // Add flood stage reference lines
+    // Add annotations for flood stage and current time marker
     const annotations = {};
 
+    // Add flood stage reference line
     if (site.floodStage && site.floodStage > 0) {
         annotations.floodLine = {
             type: 'line',
@@ -861,6 +877,43 @@ function displayNOAAChart(data, site) {
                 color: 'white'
             }
         };
+    }
+
+    // Add "now" marker to show transition from observed to forecast
+    if (data.observed.length > 0 && data.forecast.length > 0) {
+        const lastObsTime = data.observed[data.observed.length - 1].time;
+        annotations.nowLine = {
+            type: 'line',
+            xMin: lastObsTime,
+            xMax: lastObsTime,
+            borderColor: 'rgba(128, 128, 128, 0.5)',
+            borderWidth: 1,
+            borderDash: [5, 5],
+            label: {
+                display: true,
+                content: 'Current',
+                position: 'start',
+                backgroundColor: 'rgba(128, 128, 128, 0.8)',
+                color: 'white',
+                font: {
+                    size: 10
+                }
+            }
+        };
+    }
+
+    // Calculate appropriate time unit based on data range
+    let timeUnit = 'day';
+    if (data.observed.length > 0 && data.forecast.length > 0) {
+        const firstTime = data.observed[0].time;
+        const lastTime = data.forecast[data.forecast.length - 1].time;
+        const rangeDays = (lastTime - firstTime) / (1000 * 60 * 60 * 24);
+
+        if (rangeDays <= 3) {
+            timeUnit = 'hour';
+        }
+
+        console.log(`Chart time range: ${rangeDays.toFixed(1)} days, using unit: ${timeUnit}`);
     }
 
     // Create chart
@@ -891,6 +944,10 @@ function displayNOAAChart(data, site) {
                             }
                             label += context.parsed.y.toFixed(2);
                             return label;
+                        },
+                        title: function(context) {
+                            const date = new Date(context[0].parsed.x);
+                            return date.toLocaleString();
                         }
                     }
                 },
@@ -902,15 +959,19 @@ function displayNOAAChart(data, site) {
                 x: {
                     type: 'time',
                     time: {
-                        unit: 'day',
+                        unit: timeUnit,
                         displayFormats: {
-                            day: 'MMM d',
-                            hour: 'MMM d HH:mm'
+                            hour: 'MMM d HH:mm',
+                            day: 'MMM d'
                         }
                     },
                     title: {
                         display: true,
                         text: 'Date/Time'
+                    },
+                    ticks: {
+                        maxRotation: 45,
+                        minRotation: 0
                     }
                 },
                 y: {

@@ -143,27 +143,55 @@ async function loadData() {
 // Fetch USGS water data
 async function fetchUSGSData() {
     try {
-        // Fetch current conditions for major rivers across US
-        // Using stateCd to get data for multiple states
-        const states = Object.keys(US_STATES).slice(0, 50); // All states
-        const stateParam = states.join(',');
+        // Batch states to avoid URL length limits and API restrictions
+        const states = Object.keys(US_STATES);
+        const batchSize = 10; // Query 10 states at a time
+        const batches = [];
 
-        // Get sites with current streamflow data
-        const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${stateParam}&parameterCd=00060,00065&siteStatus=active`;
-
-        console.log('Fetching USGS data from:', url);
-
-        const response = await fetch(url);
-
-        if (!response.ok) {
-            throw new Error(`USGS API error: ${response.status}`);
+        // Create batches of states
+        for (let i = 0; i < states.length; i += batchSize) {
+            batches.push(states.slice(i, i + batchSize));
         }
 
-        const data = await response.json();
+        console.log(`Fetching USGS data in ${batches.length} batches...`);
 
-        if (data.value && data.value.timeSeries) {
-            usgsData = parseUSGSData(data.value.timeSeries);
-            console.log(`Fetched ${usgsData.length} USGS sites`);
+        // Fetch data for each batch
+        const allTimeSeries = [];
+
+        for (let i = 0; i < batches.length; i++) {
+            const batch = batches[i];
+            const stateParam = batch.join(',');
+
+            // Get sites with current streamflow data
+            const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${stateParam}&parameterCd=00060,00065&siteStatus=active`;
+
+            console.log(`Fetching batch ${i + 1}/${batches.length}: ${batch.join(', ')}`);
+
+            try {
+                const response = await fetch(url);
+
+                if (!response.ok) {
+                    console.warn(`USGS API error for batch ${i + 1}: ${response.status}`);
+                    continue; // Skip this batch and continue with others
+                }
+
+                const data = await response.json();
+
+                if (data.value && data.value.timeSeries) {
+                    allTimeSeries.push(...data.value.timeSeries);
+                }
+
+                // Small delay between requests to be polite to the API
+                await new Promise(resolve => setTimeout(resolve, 200));
+            } catch (error) {
+                console.warn(`Error fetching batch ${i + 1}:`, error);
+                continue; // Continue with next batch
+            }
+        }
+
+        if (allTimeSeries.length > 0) {
+            usgsData = parseUSGSData(allTimeSeries);
+            console.log(`Successfully fetched ${usgsData.length} USGS sites from ${allTimeSeries.length} time series`);
         } else {
             console.warn('No USGS data available');
             usgsData = [];

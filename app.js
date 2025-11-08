@@ -466,15 +466,19 @@ function showSiteDetails(site, source) {
         panel.classList.remove('hidden');
 
         // Fetch and display chart data
+        console.log(`Fetching USGS chart data for site: ${site.id}`);
         fetchUSGSTimeSeries(site.id).then(data => {
+            console.log(`USGS chart data received:`, data);
             if (data && data.length > 0) {
+                console.log(`Displaying USGS chart with ${data.length} parameters`);
                 displayUSGSChart(data);
             } else {
+                console.warn('No USGS time series data available');
                 document.getElementById('chartLoading').innerHTML = '<p style="color: #666; font-style: italic;">No time series data available for the last 7 days</p>';
             }
         }).catch(error => {
-            console.error('Error loading chart data:', error);
-            document.getElementById('chartLoading').innerHTML = '<p style="color: #dc3545; font-style: italic;">Error loading chart data</p>';
+            console.error('Error loading USGS chart data:', error);
+            document.getElementById('chartLoading').innerHTML = '<p style="color: #dc3545; font-style: italic;">Error loading chart data: ' + error.message + '</p>';
         });
 
         return;
@@ -540,15 +544,25 @@ function showSiteDetails(site, source) {
         panel.classList.remove('hidden');
 
         // Fetch and display forecast chart data
+        console.log(`Fetching NOAA forecast data for gauge: ${site.id}`);
         fetchNOAAStageFlow(site.id, site.floodStage).then(data => {
+            console.log(`NOAA data received - Observed: ${data.observed.length}, Forecast: ${data.forecast.length}`);
+            if (data.observed.length > 0) {
+                console.log(`First observed: ${data.observed[0].time.toISOString()}, Last observed: ${data.observed[data.observed.length - 1].time.toISOString()}`);
+            }
+            if (data.forecast.length > 0) {
+                console.log(`First forecast: ${data.forecast[0].time.toISOString()}, Last forecast: ${data.forecast[data.forecast.length - 1].time.toISOString()}`);
+            }
+
             if (data && (data.observed.length > 0 || data.forecast.length > 0)) {
                 displayNOAAChart(data, site);
             } else {
+                console.warn('No NOAA forecast or observed data available');
                 document.getElementById('chartLoading').innerHTML = '<p style="color: #666; font-style: italic;">No forecast data available for this gauge</p>';
             }
         }).catch(error => {
-            console.error('Error loading forecast data:', error);
-            document.getElementById('chartLoading').innerHTML = '<p style="color: #dc3545; font-style: italic;">Error loading forecast data</p>';
+            console.error('Error loading NOAA forecast data:', error);
+            document.getElementById('chartLoading').innerHTML = '<p style="color: #dc3545; font-style: italic;">Error loading forecast data: ' + error.message + '</p>';
         });
     }
 }
@@ -745,9 +759,17 @@ async function fetchNOAAStageFlow(gaugeId, floodStage) {
 
         const data = await response.json();
 
+        console.log(`Raw NOAA API response for ${gaugeId}:`, {
+            hasObserved: !!data.observed,
+            hasForecast: !!data.forecast,
+            observedPoints: data.observed?.data?.length || 0,
+            forecastPoints: data.forecast?.data?.length || 0
+        });
+
         // Parse observed data
         const observedData = [];
         if (data.observed && data.observed.data) {
+            console.log(`Processing ${data.observed.data.length} observed data points`);
             data.observed.data.forEach(point => {
                 if (point.primary !== null && point.primary !== -999 && point.primary !== -9999) {
                     observedData.push({
@@ -757,11 +779,13 @@ async function fetchNOAAStageFlow(gaugeId, floodStage) {
                     });
                 }
             });
+            console.log(`Kept ${observedData.length} valid observed points`);
         }
 
         // Parse forecast data
         const forecastData = [];
         if (data.forecast && data.forecast.data) {
+            console.log(`Processing ${data.forecast.data.length} forecast data points`);
             data.forecast.data.forEach(point => {
                 if (point.primary !== null && point.primary !== -999 && point.primary !== -9999) {
                     forecastData.push({
@@ -771,6 +795,7 @@ async function fetchNOAAStageFlow(gaugeId, floodStage) {
                     });
                 }
             });
+            console.log(`Kept ${forecastData.length} valid forecast points`);
         }
 
         return {

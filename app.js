@@ -4,6 +4,7 @@ let usgsLayer;
 let noaaLayer;
 let usgsData = [];
 let noaaData = [];
+let isLoading = false;
 
 // US States for filtering
 const US_STATES = {
@@ -120,6 +121,13 @@ function updateStats() {
 
 // Load all data
 async function loadData() {
+    // Prevent multiple simultaneous loads
+    if (isLoading) {
+        console.log('Data load already in progress, skipping...');
+        return;
+    }
+
+    isLoading = true;
     showLoading();
     clearMap();
 
@@ -137,6 +145,7 @@ async function loadData() {
         alert('Error loading data. Please check the console for details.');
     } finally {
         hideLoading();
+        isLoading = false;
     }
 }
 
@@ -279,17 +288,43 @@ async function fetchNOAAData() {
 function parseNOAAData(gauges) {
     return gauges
         .filter(gauge => gauge.latitude && gauge.longitude)
-        .map(gauge => ({
-            id: gauge.lid || gauge.gaugeID,
-            name: gauge.name || 'Unknown',
-            latitude: parseFloat(gauge.latitude),
-            longitude: parseFloat(gauge.longitude),
-            state: gauge.state || 'Unknown',
-            status: gauge.status || 'Unknown',
-            floodStage: gauge.flood?.stage || null,
-            currentStage: gauge.observed?.stage || null,
-            forecast: gauge.forecast || null
-        }))
+        .map(gauge => {
+            // Extract state name or abbreviation
+            const state = typeof gauge.state === 'object'
+                ? (gauge.state.abbreviation || gauge.state.name || 'Unknown')
+                : (gauge.state || 'Unknown');
+
+            // Extract status information
+            const floodCategory = gauge.status?.observed?.floodCategory ||
+                                 gauge.status?.forecast?.floodCategory ||
+                                 'Unknown';
+            const statusText = floodCategory.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+
+            // Extract current stage
+            const currentStage = gauge.status?.observed?.primary !== -999
+                ? gauge.status?.observed?.primary
+                : null;
+
+            // Extract flood stage if available
+            const floodStage = gauge.flood?.stage || null;
+
+            return {
+                id: gauge.lid || gauge.gaugeID,
+                name: gauge.name || 'Unknown',
+                latitude: parseFloat(gauge.latitude),
+                longitude: parseFloat(gauge.longitude),
+                state: state,
+                status: statusText,
+                floodCategory: floodCategory,
+                floodStage: floodStage,
+                currentStage: currentStage,
+                currentStageUnit: gauge.status?.observed?.primaryUnit || 'ft',
+                observedTime: gauge.status?.observed?.validTime || null,
+                rfc: gauge.rfc?.name || null,
+                wfo: gauge.wfo?.name || null,
+                forecast: gauge.status?.forecast || null
+            };
+        })
         .filter(gauge => !isNaN(gauge.latitude) && !isNaN(gauge.longitude));
 }
 
@@ -347,24 +382,38 @@ function displayNOAAMarkers() {
             fillOpacity: 0.8
         });
 
-        // Create popup content
+        // Create popup content with flood category color
+        const categoryColors = {
+            'no_flooding': '#28a745',
+            'minor': '#ffc107',
+            'moderate': '#fd7e14',
+            'major': '#dc3545',
+            'record': '#6f42c1'
+        };
+        const categoryColor = categoryColors[gauge.floodCategory] || '#6c757d';
+
         let popupContent = `
             <div class="popup-content">
                 <h4>📊 ${gauge.name}</h4>
                 <p><strong>Gauge ID:</strong> ${gauge.id}</p>
                 <p><strong>State:</strong> ${gauge.state}</p>
-                <p><strong>Status:</strong> ${gauge.status}</p>
+                <p><strong>Status:</strong> <span style="color: ${categoryColor}; font-weight: bold;">${gauge.status}</span></p>
         `;
 
         if (gauge.currentStage) {
-            popupContent += `<p><strong>Current Stage:</strong> ${gauge.currentStage} ft</p>`;
+            popupContent += `<p><strong>Current Stage:</strong> ${gauge.currentStage} ${gauge.currentStageUnit}</p>`;
         }
 
         if (gauge.floodStage) {
             popupContent += `<p><strong>Flood Stage:</strong> ${gauge.floodStage} ft</p>`;
         }
 
-        popupContent += `<p style="font-size: 0.85em; color: #666; margin-top: 5px;">Source: NOAA NWPS</p></div>`;
+        if (gauge.observedTime) {
+            const obsTime = new Date(gauge.observedTime);
+            popupContent += `<p style="font-size: 0.85em; color: #666;">Updated: ${obsTime.toLocaleString()}</p>`;
+        }
+
+        popupContent += `<p style="font-size: 0.85em; color: #666; margin-top: 5px;">Click for forecast chart</p></div>`;
 
         marker.bindPopup(popupContent);
         marker.on('click', () => showSiteDetails(gauge, 'NOAA'));
@@ -400,26 +449,63 @@ function showSiteDetails(site, source) {
 
         html += `<tr><td colspan="2" style="padding-top: 10px;"><a href="https://waterdata.usgs.gov/monitoring-location/${site.id}/" target="_blank" style="color: #667eea;">View on USGS Website →</a></td></tr>`;
     } else {
+        // NOAA gauge details
+        const categoryColors = {
+            'no_flooding': '#28a745',
+            'minor': '#ffc107',
+            'moderate': '#fd7e14',
+            'major': '#dc3545',
+            'record': '#6f42c1'
+        };
+        const categoryColor = categoryColors[site.floodCategory] || '#6c757d';
+
         html += `
             <tr><td>Gauge ID</td><td>${site.id}</td></tr>
             <tr><td>State</td><td>${site.state}</td></tr>
-            <tr><td>Status</td><td>${site.status}</td></tr>
+            <tr><td>Status</td><td><span style="color: ${categoryColor}; font-weight: bold;">${site.status}</span></td></tr>
+        `;
+
+        if (site.rfc) {
+            html += `<tr><td>Forecast Center</td><td>${site.rfc}</td></tr>`;
+        }
+
+        if (site.wfo) {
+            html += `<tr><td>Weather Office</td><td>${site.wfo}</td></tr>`;
+        }
+
+        html += `
             <tr><td>Latitude</td><td>${site.latitude.toFixed(6)}</td></tr>
             <tr><td>Longitude</td><td>${site.longitude.toFixed(6)}</td></tr>
         `;
 
         if (site.currentStage) {
-            html += `<tr><td>Current Stage</td><td>${site.currentStage} ft</td></tr>`;
+            html += `<tr><td>Current Stage</td><td>${site.currentStage} ${site.currentStageUnit}</td></tr>`;
         }
 
         if (site.floodStage) {
             html += `<tr><td>Flood Stage</td><td>${site.floodStage} ft</td></tr>`;
         }
 
-        html += `<tr><td colspan="2" style="padding-top: 10px;"><a href="https://water.noaa.gov/gauges/${site.id}" target="_blank" style="color: #667eea;">View on NOAA Website →</a></td></tr>`;
-    }
+        if (site.observedTime) {
+            const obsTime = new Date(site.observedTime);
+            html += `<tr><td>Last Updated</td><td>${obsTime.toLocaleString()}</td></tr>`;
+        }
 
-    html += '</table>';
+        html += `<tr><td colspan="2" style="padding-top: 10px;"><a href="https://water.noaa.gov/gauges/${site.id}" target="_blank" style="color: #667eea;">View on NOAA Website →</a></td></tr>`;
+        html += '</table>';
+
+        // Add forecast hydrograph chart
+        html += `
+            <div style="margin-top: 15px;">
+                <h4 style="margin-bottom: 10px; color: #667eea;">River Forecast</h4>
+                <img src="https://water.noaa.gov/resources/hydrographs/${site.id}_hg.png"
+                     alt="Forecast hydrograph for ${site.name}"
+                     style="width: 100%; border-radius: 5px; border: 1px solid #ddd;"
+                     onerror="this.onerror=null; this.src=''; this.style.display='none'; this.nextElementSibling.style.display='block';">
+                <p style="display: none; color: #666; font-style: italic; margin-top: 10px;">Forecast chart not available for this gauge</p>
+            </div>
+        `;
+    }
 
     content.innerHTML = html;
     panel.classList.remove('hidden');

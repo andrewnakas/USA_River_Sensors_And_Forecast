@@ -152,52 +152,51 @@ async function loadData() {
 // Fetch USGS water data
 async function fetchUSGSData() {
     try {
-        // Batch states to avoid URL length limits and API restrictions
+        // Query each state individually for better reliability
         const states = Object.keys(US_STATES);
-        const batchSize = 10; // Query 10 states at a time
-        const batches = [];
 
-        // Create batches of states
-        for (let i = 0; i < states.length; i += batchSize) {
-            batches.push(states.slice(i, i + batchSize));
-        }
+        console.log(`Fetching USGS data for ${states.length} states...`);
 
-        console.log(`Fetching USGS data in ${batches.length} batches...`);
-
-        // Fetch data for each batch
+        // Fetch data for each state
         const allTimeSeries = [];
+        let successCount = 0;
+        let errorCount = 0;
 
-        for (let i = 0; i < batches.length; i++) {
-            const batch = batches[i];
-            const stateParam = batch.join(',');
+        for (let i = 0; i < states.length; i++) {
+            const stateCode = states[i];
 
             // Get sites with current water data (multiple parameters to catch more sites)
             // 00060=Discharge, 00065=Gage height, 00010=Temperature, 00045=Precipitation
-            const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${stateParam}&parameterCd=00060,00065,00010,00045&siteStatus=active`;
+            const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${stateCode}&parameterCd=00060,00065,00010,00045&siteStatus=active`;
 
-            console.log(`Fetching batch ${i + 1}/${batches.length}: ${batch.join(', ')}`);
+            console.log(`Fetching ${stateCode} (${i + 1}/${states.length})...`);
 
             try {
                 const response = await fetch(url);
 
                 if (!response.ok) {
-                    console.warn(`USGS API error for batch ${i + 1}: ${response.status}`);
-                    continue; // Skip this batch and continue with others
+                    console.warn(`USGS API error for ${stateCode}: ${response.status}`);
+                    errorCount++;
+                    continue; // Skip this state and continue with others
                 }
 
                 const data = await response.json();
 
                 if (data.value && data.value.timeSeries) {
                     allTimeSeries.push(...data.value.timeSeries);
+                    successCount++;
                 }
 
-                // Small delay between requests to be polite to the API
-                await new Promise(resolve => setTimeout(resolve, 200));
+                // Delay between requests to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 100));
             } catch (error) {
-                console.warn(`Error fetching batch ${i + 1}:`, error);
-                continue; // Continue with next batch
+                console.warn(`Error fetching ${stateCode}:`, error);
+                errorCount++;
+                continue; // Continue with next state
             }
         }
+
+        console.log(`USGS fetch complete: ${successCount} states succeeded, ${errorCount} failed`);
 
         if (allTimeSeries.length > 0) {
             usgsData = parseUSGSData(allTimeSeries);

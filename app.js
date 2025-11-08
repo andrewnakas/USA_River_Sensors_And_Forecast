@@ -125,7 +125,7 @@ function updateStats() {
     document.getElementById('stats').classList.remove('hidden');
 }
 
-// Load all data
+// Load all metadata (lazy loading - no time series yet)
 async function loadData() {
     // Prevent multiple simultaneous loads
     if (isLoading) {
@@ -155,7 +155,7 @@ async function loadData() {
     }
 }
 
-// Fetch USGS water data
+// Fetch USGS metadata (not time series - lazy loading)
 async function fetchUSGSData() {
     try {
         // Query each state individually for better reliability
@@ -217,7 +217,7 @@ async function fetchUSGSData() {
     }
 }
 
-// Parse USGS data
+// Parse USGS metadata
 function parseUSGSData(timeSeries) {
     const sitesMap = new Map();
 
@@ -229,7 +229,6 @@ function parseUSGSData(timeSeries) {
             const lat = parseFloat(site.geoLocation.geogLocation.latitude);
             const lon = parseFloat(site.geoLocation.geogLocation.longitude);
 
-            // Only include sites with valid coordinates
             if (!isNaN(lat) && !isNaN(lon)) {
                 sitesMap.set(siteCode, {
                     id: siteCode,
@@ -243,7 +242,7 @@ function parseUSGSData(timeSeries) {
             }
         }
 
-        // Add parameter data
+        // Store current values
         if (sitesMap.has(siteCode) && series.values && series.values[0] && series.values[0].value.length > 0) {
             const latestValue = series.values[0].value[0];
             const variable = series.variable;
@@ -261,14 +260,10 @@ function parseUSGSData(timeSeries) {
     return Array.from(sitesMap.values());
 }
 
-// Fetch NOAA river forecast data
+// Fetch NOAA metadata (not time series - lazy loading)
 async function fetchNOAAData() {
     try {
-        // NOAA NWPS API endpoint for gauge locations
-        const url = 'https://api.water.noaa.gov/nwps/v1/gauges?status=active&limit=1000';
-
-        console.log('Fetching NOAA data from:', url);
-
+        const url = 'https://api.water.noaa.gov/nwps/v1/gauges?status=active';
         const response = await fetch(url);
 
         if (!response.ok) {
@@ -279,9 +274,8 @@ async function fetchNOAAData() {
 
         if (data.gauges && Array.isArray(data.gauges)) {
             noaaData = parseNOAAData(data.gauges);
-            console.log(`Fetched ${noaaData.length} NOAA gauges`);
+            console.log(`Fetched ${noaaData.length} NOAA gauges (metadata only)`);
         } else {
-            console.warn('No NOAA data available');
             noaaData = [];
         }
     } catch (error) {
@@ -290,7 +284,7 @@ async function fetchNOAAData() {
     }
 }
 
-// Parse NOAA data
+// Parse NOAA metadata
 function parseNOAAData(gauges) {
     return gauges
         .filter(gauge => gauge.latitude && gauge.longitude)
@@ -335,7 +329,7 @@ function parseNOAAData(gauges) {
         .filter(gauge => !isNaN(gauge.latitude) && !isNaN(gauge.longitude));
 }
 
-// Display USGS markers on map
+// Display USGS markers
 function displayUSGSMarkers() {
     usgsLayer.clearLayers();
 
@@ -349,33 +343,31 @@ function displayUSGSMarkers() {
             fillOpacity: 0.8
         });
 
-        // Create popup content
         let popupContent = `
             <div class="popup-content">
                 <h4>🌊 ${site.name}</h4>
                 <p><strong>Site ID:</strong> ${site.id}</p>
                 <p><strong>State:</strong> ${site.state}</p>
-                <p><strong>Type:</strong> ${site.type}</p>
         `;
 
         if (site.parameters.length > 0) {
-            popupContent += '<p><strong>Current Measurements:</strong></p><ul style="margin: 5px 0; padding-left: 20px;">';
+            popupContent += '<p><strong>Current:</strong></p><ul style="margin: 5px 0; padding-left: 20px;">';
             site.parameters.forEach(param => {
                 popupContent += `<li>${param.name}: ${param.value} ${param.unit}</li>`;
             });
             popupContent += '</ul>';
         }
 
-        popupContent += `<p style="font-size: 0.85em; color: #666; margin-top: 5px;">Source: USGS</p></div>`;
+        popupContent += `<p style="font-size: 0.85em; color: #666;">Click for time series + forecast</p></div>`;
 
         marker.bindPopup(popupContent);
-        marker.on('click', () => showSiteDetails(site, 'USGS'));
+        marker.on('click', () => handleSensorClick(site, 'USGS'));
 
         usgsLayer.addLayer(marker);
     });
 }
 
-// Display NOAA markers on map
+// Display NOAA markers
 function displayNOAAMarkers() {
     noaaLayer.clearLayers();
 
@@ -439,36 +431,35 @@ function displayNOAAMarkers() {
         popupContent += `<p style="font-size: 0.85em; color: #666;">Click for chart</p></div>`;
 
         marker.bindPopup(popupContent);
-        marker.on('click', () => showSiteDetails(gauge, 'NOAA'));
+        marker.on('click', () => handleSensorClick(gauge, 'NOAA'));
 
         noaaLayer.addLayer(marker);
     });
 }
 
-// Show detailed site information
-function showSiteDetails(site, source) {
+// Handle sensor click - lazy load time series + NWM forecast
+async function handleSensorClick(sensor, source) {
     const panel = document.getElementById('infoPanel');
     const content = document.getElementById('infoPanelContent');
 
-    let html = `<h3>${source === 'USGS' ? '🌊' : '📊'} ${site.name}</h3>`;
-    html += '<table>';
+    // Show loading state
+    content.innerHTML = '<div style="padding: 20px; text-align: center;"><div class="spinner"></div><p>Loading data and forecasts...</p></div>';
+    panel.classList.remove('hidden');
 
-    if (source === 'USGS') {
-        html += `
-            <tr><td>Site ID</td><td>${site.id}</td></tr>
-            <tr><td>State</td><td>${site.state}</td></tr>
-            <tr><td>Type</td><td>${site.type}</td></tr>
-            <tr><td>Latitude</td><td>${site.latitude.toFixed(6)}</td></tr>
-            <tr><td>Longitude</td><td>${site.longitude.toFixed(6)}</td></tr>
-        `;
+    try {
+        // Fetch sensor time series and NWM forecast in parallel
+        const [sensorData, nwmData] = await Promise.all([
+            fetchSensorTimeSeries(sensor, source),
+            queryNWMForecast(sensor.latitude, sensor.longitude)
+        ]);
 
-        if (site.parameters.length > 0) {
-            html += '<tr><td colspan="2"><strong>Measurements:</strong></td></tr>';
-            site.parameters.forEach(param => {
-                html += `<tr><td>${param.name}</td><td>${param.value} ${param.unit}</td></tr>`;
-                html += `<tr><td>Last Updated</td><td>${new Date(param.dateTime).toLocaleString()}</td></tr>`;
-            });
-        }
+        // Display combined data
+        displaySensorDataWithForecast(sensor, source, sensorData, nwmData);
+    } catch (error) {
+        console.error('Error loading sensor details:', error);
+        content.innerHTML = '<div style="padding: 20px;"><p style="color: red;">Error loading data. Please try again.</p></div>';
+    }
+}
 
         html += `<tr><td colspan="2" style="padding-top: 10px;"><a href="https://waterdata.usgs.gov/monitoring-location/${site.id}/" target="_blank" style="color: #667eea;">View on USGS Website →</a></td></tr>`;
         html += '</table>';
@@ -539,8 +530,62 @@ function showSiteDetails(site, source) {
             html += `<tr><td>Current Stage</td><td>${site.currentStage} ${site.currentStageUnit}</td></tr>`;
         }
 
-        if (site.floodStage) {
-            html += `<tr><td>Flood Stage</td><td>${site.floodStage} ft</td></tr>`;
+    try {
+        const response = await fetch(url);
+        if (!response.ok) return null;
+
+        const data = await response.json();
+
+        if (!data.value || !data.value.timeSeries) return null;
+
+        const result = {};
+        data.value.timeSeries.forEach(series => {
+            const paramCode = series.variable.variableCode[0].value;
+            const paramName = series.variable.variableName;
+            const unit = series.variable.unit?.unitCode || '';
+
+            if (series.values && series.values[0] && series.values[0].value) {
+                result[paramCode] = {
+                    name: paramName,
+                    unit: unit,
+                    data: series.values[0].value.map(v => ({
+                        time: new Date(v.dateTime),
+                        value: parseFloat(v.value)
+                    }))
+                };
+            }
+        });
+
+        return result;
+    } catch (error) {
+        console.error('Error fetching USGS time series:', error);
+        return null;
+    }
+}
+
+// Fetch NOAA time series
+async function fetchNOAATimeSeries(gaugeId) {
+    // NOAA time series is often unavailable, return null
+    // NWM will provide the forecast data
+    return null;
+}
+
+// Query NWM forecast for location
+async function queryNWMForecast(lat, lon) {
+    try {
+        // Query NWM short-range forecast service
+        const url = `https://mapservices.weather.noaa.gov/eventdriven/rest/services/water/nwm_short_range_streamflow/MapServer/0/query?` +
+            `geometry=${lon},${lat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&` +
+            `distance=5000&units=esriSRUnit_Meter&outFields=*&returnGeometry=true&f=json`;
+
+        const response = await fetch(url);
+        if (!response.ok) return null;
+
+        const data = await response.json();
+
+        if (!data.features || data.features.length === 0) {
+            console.log('No NWM reach found within 5km');
+            return null;
         }
 
         if (site.observedTime) {
@@ -593,6 +638,10 @@ function showSiteDetails(site, source) {
 // Close info panel
 function closeInfoPanel() {
     document.getElementById('infoPanel').classList.add('hidden');
+    if (currentChart) {
+        currentChart.destroy();
+        currentChart = null;
+    }
 }
 
 // Fetch USGS time series data for charting
@@ -1050,14 +1099,15 @@ function filterByState() {
     const selectedState = document.getElementById('stateFilter').value;
 
     if (!selectedState) {
-        // Show all markers
         displayUSGSMarkers();
         displayNOAAMarkers();
         return;
     }
 
-    // Filter USGS data
+    // Filter and display
     const filteredUSGS = usgsData.filter(site => site.state === selectedState);
+    const filteredNOAA = noaaData.filter(gauge => gauge.state === selectedState);
+
     usgsLayer.clearLayers();
     filteredUSGS.forEach(site => {
         const marker = L.circleMarker([site.latitude, site.longitude], {
@@ -1068,32 +1118,11 @@ function filterByState() {
             opacity: 1,
             fillOpacity: 0.8
         });
-
-        let popupContent = `
-            <div class="popup-content">
-                <h4>🌊 ${site.name}</h4>
-                <p><strong>Site ID:</strong> ${site.id}</p>
-                <p><strong>State:</strong> ${site.state}</p>
-        `;
-
-        if (site.parameters.length > 0) {
-            popupContent += '<p><strong>Current Measurements:</strong></p><ul style="margin: 5px 0; padding-left: 20px;">';
-            site.parameters.forEach(param => {
-                popupContent += `<li>${param.name}: ${param.value} ${param.unit}</li>`;
-            });
-            popupContent += '</ul>';
-        }
-
-        popupContent += `<p style="font-size: 0.85em; color: #666;">Source: USGS</p></div>`;
-
-        marker.bindPopup(popupContent);
-        marker.on('click', () => showSiteDetails(site, 'USGS'));
-
+        marker.bindPopup(`<div class="popup-content"><h4>🌊 ${site.name}</h4></div>`);
+        marker.on('click', () => handleSensorClick(site, 'USGS'));
         usgsLayer.addLayer(marker);
     });
 
-    // Filter NOAA data
-    const filteredNOAA = noaaData.filter(gauge => gauge.state === selectedState);
     noaaLayer.clearLayers();
     filteredNOAA.forEach(gauge => {
         const marker = L.circleMarker([gauge.latitude, gauge.longitude], {
@@ -1104,31 +1133,11 @@ function filterByState() {
             opacity: 1,
             fillOpacity: 0.8
         });
-
-        let popupContent = `
-            <div class="popup-content">
-                <h4>📊 ${gauge.name}</h4>
-                <p><strong>Gauge ID:</strong> ${gauge.id}</p>
-                <p><strong>State:</strong> ${gauge.state}</p>
-        `;
-
-        if (gauge.currentStage) {
-            popupContent += `<p><strong>Current Stage:</strong> ${gauge.currentStage} ft</p>`;
-        }
-
-        if (gauge.floodStage) {
-            popupContent += `<p><strong>Flood Stage:</strong> ${gauge.floodStage} ft</p>`;
-        }
-
-        popupContent += `<p style="font-size: 0.85em; color: #666;">Source: NOAA NWPS</p></div>`;
-
-        marker.bindPopup(popupContent);
-        marker.on('click', () => showSiteDetails(gauge, 'NOAA'));
-
+        marker.bindPopup(`<div class="popup-content"><h4>📊 ${gauge.name}</h4></div>`);
+        marker.on('click', () => handleSensorClick(gauge, 'NOAA'));
         noaaLayer.addLayer(marker);
     });
 
-    // Update stats for filtered data
     document.getElementById('usgsCount').textContent = `USGS: ${filteredUSGS.length}`;
     document.getElementById('noaaCount').textContent = `NOAA: ${filteredNOAA.length}`;
 }

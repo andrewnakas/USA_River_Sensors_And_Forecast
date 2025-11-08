@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>USA River Sensors & Forecast</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <!-- Leaflet MarkerCluster CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.css" />
+    <link rel="stylesheet" href="https://unpkg.com/leaflet.markercluster@1.5.3/dist/MarkerCluster.Default.css" />
+
+    <link rel="stylesheet" href="style.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🌊 USA River Sensors & Forecast</h1>
+            <p class="subtitle">Real-time river data and forecasts across America</p>
+        </header>
+
+        <div class="controls">
+            <div class="control-group">
+                <label>
+                    <input type="checkbox" id="showUSGS" checked>
+                    USGS Sensors
+                </label>
+                <label>
+                    <input type="checkbox" id="showNOAA" checked>
+                    NOAA Forecasts
+                </label>
+            </div>
+
+            <div class="control-group">
+                <label for="stateFilter">Filter by State:</label>
+                <select id="stateFilter">
+                    <option value="">All States</option>
+                </select>
+            </div>
+
+            <div class="control-group">
+                <button id="refreshData" class="btn">🔄 Refresh Data</button>
+                <button id="clearMap" class="btn">🗑️ Clear Map</button>
+            </div>
+
+            <div id="loadingIndicator" class="loading hidden">
+                <div class="spinner"></div>
+                <span>Loading data...</span>
+            </div>
+
+            <div id="stats" class="stats hidden">
+                <span id="usgsCount">USGS: 0</span>
+                <span id="noaaCount">NOAA: 0</span>
+            </div>
+        </div>
+
+        <div id="map"></div>
+
+        <div class="info-panel hidden" id="infoPanel">
+            <button class="close-btn" id="closeInfo">×</button>
+            <div id="infoPanelContent"></div>
+        </div>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <!-- Leaflet MarkerCluster JS -->
+    <script src="https://unpkg.com/leaflet.markercluster@1.5.3/dist/leaflet.markercluster.js"></script>
+
+    <script src="app.js"></script>
+</body>
+</html>

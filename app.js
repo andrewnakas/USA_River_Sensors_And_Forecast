@@ -152,52 +152,51 @@ async function loadData() {
 // Fetch USGS water data
 async function fetchUSGSData() {
     try {
-        // Batch states to avoid URL length limits and API restrictions
+        // Query each state individually for better reliability
         const states = Object.keys(US_STATES);
-        const batchSize = 10; // Query 10 states at a time
-        const batches = [];
 
-        // Create batches of states
-        for (let i = 0; i < states.length; i += batchSize) {
-            batches.push(states.slice(i, i + batchSize));
-        }
+        console.log(`Fetching USGS data for ${states.length} states...`);
 
-        console.log(`Fetching USGS data in ${batches.length} batches...`);
-
-        // Fetch data for each batch
+        // Fetch data for each state
         const allTimeSeries = [];
+        let successCount = 0;
+        let errorCount = 0;
 
-        for (let i = 0; i < batches.length; i++) {
-            const batch = batches[i];
-            const stateParam = batch.join(',');
+        for (let i = 0; i < states.length; i++) {
+            const stateCode = states[i];
 
             // Get sites with current water data (multiple parameters to catch more sites)
             // 00060=Discharge, 00065=Gage height, 00010=Temperature, 00045=Precipitation
-            const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${stateParam}&parameterCd=00060,00065,00010,00045&siteStatus=active`;
+            const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&stateCd=${stateCode}&parameterCd=00060,00065,00010,00045&siteStatus=active`;
 
-            console.log(`Fetching batch ${i + 1}/${batches.length}: ${batch.join(', ')}`);
+            console.log(`Fetching ${stateCode} (${i + 1}/${states.length})...`);
 
             try {
                 const response = await fetch(url);
 
                 if (!response.ok) {
-                    console.warn(`USGS API error for batch ${i + 1}: ${response.status}`);
-                    continue; // Skip this batch and continue with others
+                    console.warn(`USGS API error for ${stateCode}: ${response.status}`);
+                    errorCount++;
+                    continue; // Skip this state and continue with others
                 }
 
                 const data = await response.json();
 
                 if (data.value && data.value.timeSeries) {
                     allTimeSeries.push(...data.value.timeSeries);
+                    successCount++;
                 }
 
-                // Small delay between requests to be polite to the API
-                await new Promise(resolve => setTimeout(resolve, 200));
+                // Delay between requests to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 100));
             } catch (error) {
-                console.warn(`Error fetching batch ${i + 1}:`, error);
-                continue; // Continue with next batch
+                console.warn(`Error fetching ${stateCode}:`, error);
+                errorCount++;
+                continue; // Continue with next state
             }
         }
+
+        console.log(`USGS fetch complete: ${successCount} states succeeded, ${errorCount} failed`);
 
         if (allTimeSeries.length > 0) {
             usgsData = parseUSGSData(allTimeSeries);
@@ -809,43 +808,59 @@ function displayNOAAChart(data, site) {
     chartLoading.style.display = 'none';
     chartCanvas.style.display = 'block';
 
-    // Combine observed and forecast for continuity
-    const allObserved = data.observed.map(d => ({ x: d.time, y: d.stage }));
-    const allForecast = data.forecast.map(d => ({ x: d.time, y: d.stage }));
+    console.log(`NOAA Chart Data - Observed: ${data.observed.length} points, Forecast: ${data.forecast.length} points`);
 
-    // Create datasets
+    // Create combined dataset for better visualization
     const datasets = [];
 
-    // Observed data (blue line)
-    if (allObserved.length > 0) {
-        datasets.push({
-            label: `Observed Stage (${data.observedUnits.primary})`,
-            data: allObserved,
-            borderColor: 'rgb(54, 162, 235)',
-            backgroundColor: 'rgba(54, 162, 235, 0.1)',
-            tension: 0.1,
-            pointRadius: 0,
-            borderWidth: 2
-        });
+    // Combine observed and forecast data with a connection point
+    if (data.observed.length > 0 || data.forecast.length > 0) {
+        // Get the last observed point
+        const lastObserved = data.observed.length > 0 ? data.observed[data.observed.length - 1] : null;
+
+        // Observed data (blue line)
+        if (data.observed.length > 0) {
+            const observedData = data.observed.map(d => ({ x: d.time, y: d.stage }));
+
+            datasets.push({
+                label: `Observed Stage (${data.observedUnits.primary})`,
+                data: observedData,
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                tension: 0.1,
+                pointRadius: 1,
+                borderWidth: 2,
+                fill: false
+            });
+        }
+
+        // Forecast data (red dashed line) - start from last observed for continuity
+        if (data.forecast.length > 0) {
+            const forecastData = data.forecast.map(d => ({ x: d.time, y: d.stage }));
+
+            // Add last observed point to start of forecast for continuity
+            if (lastObserved && forecastData.length > 0) {
+                forecastData.unshift({ x: lastObserved.time, y: lastObserved.stage });
+            }
+
+            datasets.push({
+                label: `Forecast Stage (${data.forecastUnits.primary})`,
+                data: forecastData,
+                borderColor: 'rgb(255, 99, 132)',
+                backgroundColor: 'rgba(255, 99, 132, 0.1)',
+                borderDash: [5, 5],
+                tension: 0.1,
+                pointRadius: 1,
+                borderWidth: 2,
+                fill: false
+            });
+        }
     }
 
-    // Forecast data (red dashed line)
-    if (allForecast.length > 0) {
-        datasets.push({
-            label: `Forecast Stage (${data.forecastUnits.primary})`,
-            data: allForecast,
-            borderColor: 'rgb(255, 99, 132)',
-            backgroundColor: 'rgba(255, 99, 132, 0.1)',
-            borderDash: [5, 5],
-            tension: 0.1,
-            pointRadius: 0,
-            borderWidth: 2
-        });
-    }
-
-    // Add flood stage reference lines
+    // Add annotations for flood stage and current time marker
     const annotations = {};
 
+    // Add flood stage reference line
     if (site.floodStage && site.floodStage > 0) {
         annotations.floodLine = {
             type: 'line',
@@ -862,6 +877,43 @@ function displayNOAAChart(data, site) {
                 color: 'white'
             }
         };
+    }
+
+    // Add "now" marker to show transition from observed to forecast
+    if (data.observed.length > 0 && data.forecast.length > 0) {
+        const lastObsTime = data.observed[data.observed.length - 1].time;
+        annotations.nowLine = {
+            type: 'line',
+            xMin: lastObsTime,
+            xMax: lastObsTime,
+            borderColor: 'rgba(128, 128, 128, 0.5)',
+            borderWidth: 1,
+            borderDash: [5, 5],
+            label: {
+                display: true,
+                content: 'Current',
+                position: 'start',
+                backgroundColor: 'rgba(128, 128, 128, 0.8)',
+                color: 'white',
+                font: {
+                    size: 10
+                }
+            }
+        };
+    }
+
+    // Calculate appropriate time unit based on data range
+    let timeUnit = 'day';
+    if (data.observed.length > 0 && data.forecast.length > 0) {
+        const firstTime = data.observed[0].time;
+        const lastTime = data.forecast[data.forecast.length - 1].time;
+        const rangeDays = (lastTime - firstTime) / (1000 * 60 * 60 * 24);
+
+        if (rangeDays <= 3) {
+            timeUnit = 'hour';
+        }
+
+        console.log(`Chart time range: ${rangeDays.toFixed(1)} days, using unit: ${timeUnit}`);
     }
 
     // Create chart
@@ -892,6 +944,10 @@ function displayNOAAChart(data, site) {
                             }
                             label += context.parsed.y.toFixed(2);
                             return label;
+                        },
+                        title: function(context) {
+                            const date = new Date(context[0].parsed.x);
+                            return date.toLocaleString();
                         }
                     }
                 },
@@ -903,15 +959,19 @@ function displayNOAAChart(data, site) {
                 x: {
                     type: 'time',
                     time: {
-                        unit: 'day',
+                        unit: timeUnit,
                         displayFormats: {
-                            day: 'MMM d',
-                            hour: 'MMM d HH:mm'
+                            hour: 'MMM d HH:mm',
+                            day: 'MMM d'
                         }
                     },
                     title: {
                         display: true,
                         text: 'Date/Time'
+                    },
+                    ticks: {
+                        maxRotation: 45,
+                        minRotation: 0
                     }
                 },
                 y: {

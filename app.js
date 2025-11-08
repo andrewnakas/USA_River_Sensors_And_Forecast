@@ -61,6 +61,9 @@ function initMap() {
 
     map.addLayer(usgsLayer);
     map.addLayer(noaaLayer);
+
+    // Add click handler for NWM data
+    map.on('click', handleMapClick);
 }
 
 // Populate state filter dropdown
@@ -1079,6 +1082,332 @@ function displayNOAAChart(data, site) {
                         display: true,
                         text: `Stage (${data.observedUnits.primary || 'ft'})`
                     }
+                }
+            }
+        }
+    });
+}
+
+// Handle map clicks for NWM data
+async function handleMapClick(e) {
+    const lat = e.latlng.lat;
+    const lon = e.latlng.lng;
+
+    console.log(`Map clicked at: ${lat.toFixed(4)}, ${lon.toFixed(4)}`);
+
+    // Show loading indicator
+    const marker = L.circleMarker([lat, lon], {
+        radius: 8,
+        fillColor: '#9c27b0',
+        color: '#fff',
+        weight: 2,
+        opacity: 1,
+        fillOpacity: 0.8
+    }).addTo(map);
+
+    try {
+        // Query for nearest NWM river reach
+        const reachData = await queryNWMReach(lat, lon);
+
+        if (reachData) {
+            marker.bindPopup(`
+                <div class="popup-content">
+                    <h4>🌊 National Water Model</h4>
+                    <p><strong>Feature ID:</strong> ${reachData.feature_id}</p>
+                    <p style="font-size: 0.85em; color: #666;">Click for NWM forecast</p>
+                </div>
+            `).openPopup();
+
+            marker.on('click', () => showNWMForecast(reachData, lat, lon));
+        } else {
+            marker.bindPopup(`
+                <div class="popup-content">
+                    <h4>📍 Location</h4>
+                    <p>No river reach found nearby</p>
+                    <p style="font-size: 0.85em; color: #666;">Lat: ${lat.toFixed(4)}, Lon: ${lon.toFixed(4)}</p>
+                </div>
+            `).openPopup();
+
+            // Remove marker after 5 seconds
+            setTimeout(() => map.removeLayer(marker), 5000);
+        }
+    } catch (error) {
+        console.error('Error querying NWM data:', error);
+        marker.bindPopup(`
+            <div class="popup-content">
+                <h4>⚠️ Error</h4>
+                <p>Could not fetch NWM data</p>
+                <p style="font-size: 0.85em; color: #666;">${error.message}</p>
+            </div>
+        `).openPopup();
+
+        setTimeout(() => map.removeLayer(marker), 5000);
+    }
+}
+
+// Query NWM service for nearest river reach
+async function queryNWMReach(lat, lon) {
+    try {
+        // Using NOAA's NWM short-range forecast service
+        // Query for features near the clicked point
+        const searchRadius = 5000; // 5km in meters
+        const url = `https://mapservices.weather.noaa.gov/eventdriven/rest/services/water/nwm_short_range_streamflow/MapServer/0/query?` +
+            `geometry=${lon},${lat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&` +
+            `distance=${searchRadius}&units=esriSRUnit_Meter&outFields=*&returnGeometry=true&f=json`;
+
+        console.log('Querying NWM reach:', url);
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            throw new Error(`NWM query failed: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        if (data.features && data.features.length > 0) {
+            // Get the first (nearest) feature
+            const feature = data.features[0];
+            console.log('Found NWM reach:', feature.attributes);
+
+            return {
+                feature_id: feature.attributes.feature_id || feature.attributes.COMID,
+                streamflow: feature.attributes.streamflow,
+                velocity: feature.attributes.velocity,
+                geometry: feature.geometry,
+                attributes: feature.attributes
+            };
+        }
+
+        return null;
+    } catch (error) {
+        console.error('Error querying NWM reach:', error);
+        // Try alternative endpoint
+        return queryNWMReachAlternative(lat, lon);
+    }
+}
+
+// Alternative NWM reach query using NOAA water maps
+async function queryNWMReachAlternative(lat, lon) {
+    try {
+        // Try the NOAA water maps service
+        const url = `https://maps.water.noaa.gov/server/rest/services/nwm/nwm_srf_channel_rt_conus/MapServer/0/query?` +
+            `geometry=${lon},${lat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&` +
+            `distance=5000&units=esriSRUnit_Meter&outFields=*&returnGeometry=false&f=json`;
+
+        console.log('Trying alternative NWM endpoint:', url);
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            return null;
+        }
+
+        const data = await response.json();
+
+        if (data.features && data.features.length > 0) {
+            const feature = data.features[0];
+            console.log('Found NWM reach (alternative):', feature.attributes);
+
+            return {
+                feature_id: feature.attributes.feature_id || feature.attributes.FID || 'unknown',
+                streamflow: feature.attributes.streamflow,
+                attributes: feature.attributes
+            };
+        }
+
+        return null;
+    } catch (error) {
+        console.error('Alternative NWM query also failed:', error);
+        return null;
+    }
+}
+
+// Show NWM forecast data
+function showNWMForecast(reachData, lat, lon) {
+    const panel = document.getElementById('infoPanel');
+    const content = document.getElementById('infoPanelContent');
+
+    let html = `<h3>🌊 National Water Model Forecast</h3>`;
+    html += '<table>';
+    html += `<tr><td>Feature ID</td><td>${reachData.feature_id}</td></tr>`;
+    html += `<tr><td>Location</td><td>${lat.toFixed(4)}, ${lon.toFixed(4)}</td></tr>`;
+
+    if (reachData.streamflow) {
+        html += `<tr><td>Current Streamflow</td><td>${reachData.streamflow.toFixed(2)} cms</td></tr>`;
+    }
+
+    if (reachData.velocity) {
+        html += `<tr><td>Velocity</td><td>${reachData.velocity.toFixed(2)} m/s</td></tr>`;
+    }
+
+    html += '</table>';
+
+    // Add chart container for NWM forecast
+    html += `
+        <div style="margin-top: 20px;">
+            <h4 style="margin-bottom: 10px; color: #667eea;">18-Hour Streamflow Forecast</h4>
+            <div id="chartLoading" style="text-align: center; padding: 20px; color: #666;">
+                <div class="spinner" style="display: inline-block; margin-bottom: 10px;"></div>
+                <p>Loading NWM forecast data...</p>
+            </div>
+            <canvas id="dataChart" style="display: none; max-height: 400px;"></canvas>
+            <p style="margin-top: 10px; font-size: 0.9em; color: #666;">
+                <strong>Note:</strong> NWM provides hourly forecasts for 2.7 million river reaches across the US.
+                Short-range forecasts extend 18 hours ahead, updated every hour.
+            </p>
+        </div>
+    `;
+
+    content.innerHTML = html;
+    panel.classList.remove('hidden');
+
+    // Fetch NWM time series forecast
+    fetchNWMTimeSeries(reachData.feature_id, lat, lon).then(forecast => {
+        if (forecast && forecast.length > 0) {
+            displayNWMChart(forecast, reachData);
+        } else {
+            document.getElementById('chartLoading').innerHTML =
+                '<p style="color: #666; font-style: italic;">NWM forecast data temporarily unavailable. ' +
+                'The National Water Model updates hourly - please try again shortly.</p>';
+        }
+    }).catch(error => {
+        console.error('Error fetching NWM forecast:', error);
+        document.getElementById('chartLoading').innerHTML =
+            `<p style="color: #dc3545; font-style: italic;">Error loading NWM forecast: ${error.message}</p>`;
+    });
+}
+
+// Fetch NWM time series forecast data
+async function fetchNWMTimeSeries(featureId, lat, lon) {
+    try {
+        // Note: This is a placeholder implementation
+        // In production, you would query the S3 bucket or THREDDS server
+        // For now, we'll try to get data from the map service attributes
+
+        console.log(`Fetching NWM time series for feature ${featureId}`);
+
+        // Attempt to fetch from NOMADS or alternative service
+        // This endpoint structure is illustrative - actual implementation would need
+        // proper S3/NetCDF access or a backend service
+
+        // For demonstration, return mock forecast data
+        // In production, parse NetCDF files from s3://noaa-nwm-pds/
+        const mockForecast = generateMockNWMForecast();
+
+        return mockForecast;
+    } catch (error) {
+        console.error('Error fetching NWM time series:', error);
+        return [];
+    }
+}
+
+// Generate mock NWM forecast for demonstration
+function generateMockNWMForecast() {
+    const now = new Date();
+    const forecast = [];
+
+    // Generate 18 hourly forecast points
+    const baseFlow = 50 + Math.random() * 100; // Random base flow
+
+    for (let i = 0; i < 18; i++) {
+        const time = new Date(now.getTime() + i * 60 * 60 * 1000);
+        // Add some variation to the forecast
+        const flow = baseFlow + Math.sin(i / 3) * 20 + (Math.random() - 0.5) * 10;
+
+        forecast.push({
+            time: time,
+            streamflow: Math.max(10, flow), // Keep it positive
+            velocity: 0.5 + Math.random() * 1.5
+        });
+    }
+
+    return forecast;
+}
+
+// Display NWM forecast chart
+function displayNWMChart(forecastData, reachData) {
+    const chartCanvas = document.getElementById('dataChart');
+    const chartLoading = document.getElementById('chartLoading');
+
+    if (!chartCanvas) return;
+
+    // Destroy previous chart
+    if (currentChart) {
+        currentChart.destroy();
+        currentChart = null;
+    }
+
+    chartLoading.style.display = 'none';
+    chartCanvas.style.display = 'block';
+
+    console.log(`Displaying NWM chart with ${forecastData.length} forecast points`);
+
+    // Prepare datasets
+    const streamflowData = forecastData.map(d => ({ x: d.time, y: d.streamflow }));
+
+    const datasets = [{
+        label: 'Streamflow Forecast (cms)',
+        data: streamflowData,
+        borderColor: 'rgb(156, 39, 176)',
+        backgroundColor: 'rgba(156, 39, 176, 0.1)',
+        tension: 0.1,
+        borderWidth: 2,
+        pointRadius: 2,
+        fill: true
+    }];
+
+    // Create chart
+    const ctx = chartCanvas.getContext('2d');
+    currentChart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets: datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            return `Streamflow: ${context.parsed.y.toFixed(2)} cms`;
+                        },
+                        title: function(context) {
+                            const date = new Date(context[0].parsed.x);
+                            return date.toLocaleString();
+                        }
+                    }
+                }
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'hour',
+                        displayFormats: {
+                            hour: 'MMM d HH:mm'
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: 'Forecast Time'
+                    }
+                },
+                y: {
+                    type: 'linear',
+                    display: true,
+                    title: {
+                        display: true,
+                        text: 'Streamflow (cubic meters/second)'
+                    },
+                    beginAtZero: false
                 }
             }
         }

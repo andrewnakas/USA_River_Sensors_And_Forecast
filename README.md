@@ -9,8 +9,11 @@ A web-based application that fetches and visualizes real-time river sensor data 
 
 - **Real-time USGS Water Data**: Displays thousands of active river gauges and sensors from the United States Geological Survey
 - **NOAA River Forecasts**: Shows river forecast points and flood information from the National Weather Service
+- **National Water Model (NWM)**: Click anywhere on the map to access forecasts for 2.7 million river reaches
+- **Interactive Charts**: Time series visualizations for all data sources with Chart.js
 - **Interactive Map**: Powered by Leaflet with marker clustering for better performance
 - **State Filtering**: Filter sensors and forecasts by any US state
+- **Forecast-Only Filter**: Show only gauges with available forecast data
 - **Detailed Information**: Click on markers to view detailed sensor readings and forecast data
 - **Responsive Design**: Works on desktop, tablet, and mobile devices
 - **Live Updates**: Refresh data on demand to get the latest measurements
@@ -26,8 +29,15 @@ A web-based application that fetches and visualizes real-time river sensor data 
 ### NOAA National Water Prediction Service (NWPS) API
 - **Endpoint**: `https://api.water.noaa.gov/nwps/v1/`
 - **Data**: River forecasts, flood stages, current observations
-- **Coverage**: Major rivers and flood-prone areas
+- **Coverage**: Major rivers and flood-prone areas (~3,000 gauges)
 - **Update Frequency**: Multiple times daily
+
+### NOAA National Water Model (NWM)
+- **Endpoint**: `https://mapservices.weather.noaa.gov/eventdriven/rest/services/water/`
+- **Data**: Hydrologic model forecasts for all river reaches
+- **Coverage**: 2.7 million river reaches across continental US
+- **Update Frequency**: Hourly
+- **Forecast Range**: 18 hours (short-range), 10 days (medium-range)
 
 ## Installation
 
@@ -55,8 +65,9 @@ Or simply drag and drop `index.html` into your browser.
 
 ### Basic Controls
 
-- **USGS Sensors Checkbox**: Toggle visibility of USGS water sensors
-- **NOAA Forecasts Checkbox**: Toggle visibility of NOAA forecast points
+- **USGS Sensors Checkbox**: Toggle visibility of USGS water sensors (blue markers)
+- **NOAA Gauges Checkbox**: Toggle visibility of NOAA forecast points (red/gray markers)
+- **Forecast Only Checkbox**: Show only NOAA gauges with forecast data available
 - **Filter by State**: Select a state from the dropdown to show only sensors in that state
 - **Refresh Data**: Click to reload the latest data from both APIs
 - **Clear Map**: Remove all markers from the map
@@ -65,8 +76,9 @@ Or simply drag and drop `index.html` into your browser.
 
 1. **Zoom**: Use mouse wheel or the +/- buttons to zoom in/out
 2. **Pan**: Click and drag to move around the map
-3. **Click Markers**: Click on any marker to see detailed information
-4. **Cluster Navigation**: Click on numbered clusters to zoom in and see individual sensors
+3. **Click Sensors/Gauges**: Click on blue (USGS) or red (NOAA) markers for detailed information and charts
+4. **Click Anywhere for NWM**: Click on any river location to query National Water Model forecasts (purple markers)
+5. **Cluster Navigation**: Click on numbered clusters to zoom in and see individual sensors
 
 ### Understanding the Data
 
@@ -75,10 +87,18 @@ Or simply drag and drop `index.html` into your browser.
 - **Gage Height (00065)**: Water level in feet
 - Additional parameters may include temperature, pH, dissolved oxygen, etc.
 
-#### NOAA Forecasts (Red Markers)
+#### NOAA Forecasts (Red/Gray Markers)
+- **Red Markers**: Gauges with forecast data available
+- **Gray Markers**: Gauges with observations only (no forecasts)
 - **Current Stage**: Current water level in feet
 - **Flood Stage**: Water level at which flooding begins
 - **Status**: Active, inactive, or out of service
+
+#### National Water Model (Purple Markers)
+- **Streamflow Forecast**: 18-hour forecast in cubic meters per second (cms)
+- **Coverage**: Available for any river reach in the continental US
+- **Model**: NOAA's operational hydrologic model
+- **Access**: Click anywhere on the map to query the nearest river reach
 
 ## Project Structure
 
@@ -98,6 +118,7 @@ USA_River_Sensors_And_Forecast/
 - **JavaScript (ES6+)**: Application logic and API integration
 - **Leaflet.js**: Interactive mapping library
 - **Leaflet.markercluster**: Marker clustering for better performance
+- **Chart.js**: Time series data visualization with date-time support
 - **OpenStreetMap**: Base map tiles
 
 ## API Rate Limits
@@ -161,7 +182,9 @@ map = L.map('map').setView([39.8283, -98.5795], 4);
 Edit `style.css` or the marker creation code in `app.js`:
 ```javascript
 fillColor: '#1E88E5',  // USGS blue
-fillColor: '#F4511E',  // NOAA red
+fillColor: '#F4511E',  // NOAA red (with forecast)
+fillColor: '#6c757d',  // NOAA gray (observations only)
+fillColor: '#9c27b0',  // NWM purple
 ```
 
 ### Adding More Parameters
@@ -212,14 +235,15 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 ## Future Enhancements
 
-- [ ] Historical data visualization with charts
+- [x] Historical data visualization with charts (implemented)
+- [x] River forecast data integration (implemented via NWM)
 - [ ] Flood alerts and warnings
 - [ ] Weather overlay integration
 - [ ] Export data to CSV/JSON
 - [ ] Save favorite locations
 - [ ] Mobile app version
 - [ ] Real-time websocket updates
-- [ ] Precipitation and snow data
+- [ ] Enhanced NWM integration with medium-range (10-day) forecasts
 - [ ] River network visualization
 
 ## License
@@ -237,8 +261,11 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 - [USGS Water Services Documentation](https://waterservices.usgs.gov/)
 - [NOAA NWPS API Documentation](https://api.water.noaa.gov/nwps/v1/docs/)
+- [NOAA National Water Model](https://water.noaa.gov/about/nwm)
+- [NWM Map Services](https://mapservices.weather.noaa.gov/eventdriven/rest/services/water/)
 - [Leaflet Documentation](https://leafletjs.com/)
 - [Leaflet.markercluster](https://github.com/Leaflet/Leaflet.markercluster)
+- [Chart.js Documentation](https://www.chartjs.org/)
 
 ## Contact
 

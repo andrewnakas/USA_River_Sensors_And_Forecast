@@ -525,21 +525,33 @@ function showSiteDetails(site, source) {
         html += `<tr><td colspan="2" style="padding-top: 10px;"><a href="https://water.noaa.gov/gauges/${site.id}" target="_blank" style="color: #667eea;">View on NOAA Website →</a></td></tr>`;
         html += '</table>';
 
-        // Add forecast hydrograph chart
+        // Add forecast chart container
         html += `
-            <div style="margin-top: 15px;">
-                <h4 style="margin-bottom: 10px; color: #667eea;">River Forecast</h4>
-                <img src="https://water.noaa.gov/resources/hydrographs/${site.id}_hg.png"
-                     alt="Forecast hydrograph for ${site.name}"
-                     style="width: 100%; border-radius: 5px; border: 1px solid #ddd;"
-                     onerror="this.onerror=null; this.src=''; this.style.display='none'; this.nextElementSibling.style.display='block';">
-                <p style="display: none; color: #666; font-style: italic; margin-top: 10px;">Forecast chart not available for this gauge</p>
+            <div style="margin-top: 20px;">
+                <h4 style="margin-bottom: 10px; color: #667eea;">River Forecast & Observations</h4>
+                <div id="chartLoading" style="text-align: center; padding: 20px; color: #666;">
+                    <div class="spinner" style="display: inline-block; margin-bottom: 10px;"></div>
+                    <p>Loading forecast chart...</p>
+                </div>
+                <canvas id="dataChart" style="display: none; max-height: 400px;"></canvas>
             </div>
         `;
-    }
 
-    content.innerHTML = html;
-    panel.classList.remove('hidden');
+        content.innerHTML = html;
+        panel.classList.remove('hidden');
+
+        // Fetch and display forecast chart data
+        fetchNOAAStageFlow(site.id, site.floodStage).then(data => {
+            if (data && (data.observed.length > 0 || data.forecast.length > 0)) {
+                displayNOAAChart(data, site);
+            } else {
+                document.getElementById('chartLoading').innerHTML = '<p style="color: #666; font-style: italic;">No forecast data available for this gauge</p>';
+            }
+        }).catch(error => {
+            console.error('Error loading forecast data:', error);
+            document.getElementById('chartLoading').innerHTML = '<p style="color: #dc3545; font-style: italic;">Error loading forecast data</p>';
+        });
+    }
 }
 
 // Close info panel
@@ -714,6 +726,203 @@ function displayUSGSChart(timeSeriesData) {
                     }
                 },
                 ...yAxes
+            }
+        }
+    });
+}
+
+// Fetch NOAA stage/flow data for charting
+async function fetchNOAAStageFlow(gaugeId, floodStage) {
+    try {
+        const url = `https://api.water.noaa.gov/nwps/v1/gauges/${gaugeId}/stageflow`;
+
+        console.log('Fetching NOAA stage/flow data:', url);
+
+        const response = await fetch(url);
+
+        if (!response.ok) {
+            throw new Error(`Failed to fetch NOAA data: ${response.status}`);
+        }
+
+        const data = await response.json();
+
+        // Parse observed data
+        const observedData = [];
+        if (data.observed && data.observed.data) {
+            data.observed.data.forEach(point => {
+                if (point.primary !== null && point.primary !== -999 && point.primary !== -9999) {
+                    observedData.push({
+                        time: new Date(point.validTime),
+                        stage: point.primary,
+                        flow: point.secondary
+                    });
+                }
+            });
+        }
+
+        // Parse forecast data
+        const forecastData = [];
+        if (data.forecast && data.forecast.data) {
+            data.forecast.data.forEach(point => {
+                if (point.primary !== null && point.primary !== -999 && point.primary !== -9999) {
+                    forecastData.push({
+                        time: new Date(point.validTime),
+                        stage: point.primary,
+                        flow: point.secondary
+                    });
+                }
+            });
+        }
+
+        return {
+            observed: observedData,
+            forecast: forecastData,
+            observedUnits: {
+                primary: data.observed?.primaryUnits || 'ft',
+                secondary: data.observed?.secondaryUnits || 'kcfs'
+            },
+            forecastUnits: {
+                primary: data.forecast?.primaryUnits || 'ft',
+                secondary: data.forecast?.secondaryUnits || 'kcfs'
+            }
+        };
+    } catch (error) {
+        console.error('Error fetching NOAA stage/flow:', error);
+        return { observed: [], forecast: [], observedUnits: {}, forecastUnits: {} };
+    }
+}
+
+// Display NOAA forecast chart
+function displayNOAAChart(data, site) {
+    const chartCanvas = document.getElementById('dataChart');
+    const chartLoading = document.getElementById('chartLoading');
+
+    if (!chartCanvas) return;
+
+    // Destroy previous chart if it exists
+    if (currentChart) {
+        currentChart.destroy();
+        currentChart = null;
+    }
+
+    // Hide loading, show chart
+    chartLoading.style.display = 'none';
+    chartCanvas.style.display = 'block';
+
+    // Combine observed and forecast for continuity
+    const allObserved = data.observed.map(d => ({ x: d.time, y: d.stage }));
+    const allForecast = data.forecast.map(d => ({ x: d.time, y: d.stage }));
+
+    // Create datasets
+    const datasets = [];
+
+    // Observed data (blue line)
+    if (allObserved.length > 0) {
+        datasets.push({
+            label: `Observed Stage (${data.observedUnits.primary})`,
+            data: allObserved,
+            borderColor: 'rgb(54, 162, 235)',
+            backgroundColor: 'rgba(54, 162, 235, 0.1)',
+            tension: 0.1,
+            pointRadius: 0,
+            borderWidth: 2
+        });
+    }
+
+    // Forecast data (red dashed line)
+    if (allForecast.length > 0) {
+        datasets.push({
+            label: `Forecast Stage (${data.forecastUnits.primary})`,
+            data: allForecast,
+            borderColor: 'rgb(255, 99, 132)',
+            backgroundColor: 'rgba(255, 99, 132, 0.1)',
+            borderDash: [5, 5],
+            tension: 0.1,
+            pointRadius: 0,
+            borderWidth: 2
+        });
+    }
+
+    // Add flood stage reference lines
+    const annotations = {};
+
+    if (site.floodStage && site.floodStage > 0) {
+        annotations.floodLine = {
+            type: 'line',
+            yMin: site.floodStage,
+            yMax: site.floodStage,
+            borderColor: 'rgb(255, 159, 64)',
+            borderWidth: 2,
+            borderDash: [10, 5],
+            label: {
+                display: true,
+                content: `Flood Stage: ${site.floodStage} ft`,
+                position: 'end',
+                backgroundColor: 'rgba(255, 159, 64, 0.8)',
+                color: 'white'
+            }
+        };
+    }
+
+    // Create chart
+    const ctx = chartCanvas.getContext('2d');
+    currentChart = new Chart(ctx, {
+        type: 'line',
+        data: {
+            datasets: datasets
+        },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            let label = context.dataset.label || '';
+                            if (label) {
+                                label += ': ';
+                            }
+                            label += context.parsed.y.toFixed(2);
+                            return label;
+                        }
+                    }
+                },
+                annotation: Object.keys(annotations).length > 0 ? {
+                    annotations: annotations
+                } : undefined
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'day',
+                        displayFormats: {
+                            day: 'MMM d',
+                            hour: 'MMM d HH:mm'
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: 'Date/Time'
+                    }
+                },
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: {
+                        display: true,
+                        text: `Stage (${data.observedUnits.primary || 'ft'})`
+                    }
+                }
             }
         }
     });

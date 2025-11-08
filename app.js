@@ -322,7 +322,8 @@ function parseNOAAData(gauges) {
                 observedTime: gauge.status?.observed?.validTime || null,
                 rfc: gauge.rfc?.name || null,
                 wfo: gauge.wfo?.name || null,
-                forecast: gauge.status?.forecast || null
+                forecast: gauge.status?.forecast || null,
+                hasForecast: !!gauge.pedts?.forecast // Check if forecast PEDTS exists
             };
         })
         .filter(gauge => !isNaN(gauge.latitude) && !isNaN(gauge.longitude));
@@ -373,9 +374,13 @@ function displayNOAAMarkers() {
     noaaLayer.clearLayers();
 
     noaaData.forEach(gauge => {
+        // Use different color for gauges with forecasts
+        const hasForecast = gauge.hasForecast;
+        const fillColor = hasForecast ? '#dc3545' : '#6c757d'; // Red for forecast, gray for obs-only
+
         const marker = L.circleMarker([gauge.latitude, gauge.longitude], {
             radius: 6,
-            fillColor: '#F4511E',
+            fillColor: fillColor,
             color: '#fff',
             weight: 2,
             opacity: 1,
@@ -413,7 +418,11 @@ function displayNOAAMarkers() {
             popupContent += `<p style="font-size: 0.85em; color: #666;">Updated: ${obsTime.toLocaleString()}</p>`;
         }
 
-        popupContent += `<p style="font-size: 0.85em; color: #666; margin-top: 5px;">Click for forecast chart</p></div>`;
+        // Indicate if forecast is available
+        const forecastText = hasForecast ? '✓ Forecast available' : 'Observations only';
+        const forecastColor = hasForecast ? '#28a745' : '#6c757d';
+        popupContent += `<p style="font-size: 0.85em; color: ${forecastColor}; font-weight: bold; margin-top: 5px;">${forecastText}</p>`;
+        popupContent += `<p style="font-size: 0.85em; color: #666;">Click for chart</p></div>`;
 
         marker.bindPopup(popupContent);
         marker.on('click', () => showSiteDetails(gauge, 'NOAA'));

@@ -481,7 +481,7 @@ async function handleSensorClick(sensor, source) {
         console.log('Fetching USGS data + NWM forecast for site: ' + sensor.id);
         Promise.all([
             fetchUSGSTimeSeries(sensor.id),
-            queryNWMForecast(sensor.latitude, sensor.longitude)
+            queryNWMForecast(sensor.latitude, sensor.longitude, null) // USGS sites don't have reachId in metadata
         ]).then(([usgsData, nwmData]) => {
             console.log('USGS data:', usgsData, 'NWM forecast:', nwmData);
             if ((usgsData && usgsData.length > 0) || nwmData) {
@@ -553,7 +553,7 @@ async function handleSensorClick(sensor, source) {
         console.log('Fetching NOAA data + NWM forecast for gauge: ' + sensor.id);
         Promise.all([
             fetchNOAAStageFlow(sensor.id, sensor.floodStage),
-            queryNWMForecast(sensor.latitude, sensor.longitude)
+            queryNWMForecast(sensor.latitude, sensor.longitude, sensor) // Pass sensor to get reachId
         ]).then(([noaaData, nwmData]) => {
             console.log('NOAA observed: ' + noaaData.observed.length + ', NWM forecast:', nwmData);
 
@@ -570,54 +570,63 @@ async function handleSensorClick(sensor, source) {
     }
 }
 
-// Query NWM forecast for location
-async function queryNWMForecast(lat, lon) {
+// Query NWM forecast for location using NWPS API
+async function queryNWMForecast(lat, lon, sensor) {
     try {
-        // Query NWM short-range forecast service
-        const url = `https://mapservices.weather.noaa.gov/eventdriven/rest/services/water/nwm_short_range_streamflow/MapServer/0/query?` +
-            `geometry=${lon},${lat}&geometryType=esriGeometryPoint&inSR=4326&spatialRel=esriSpatialRelIntersects&` +
-            `distance=5000&units=esriSRUnit_Meter&outFields=*&returnGeometry=true&f=json`;
+        // For NOAA gauges, use the reachId directly
+        if (sensor && sensor.id) {
+            // First get the gauge info to find the reachId
+            const gaugeUrl = `https://api.water.noaa.gov/nwps/v1/gauges/${sensor.id}`;
+            const gaugeResponse = await fetch(gaugeUrl);
 
-        const response = await fetch(url);
-        if (!response.ok) {
-            console.warn('NWM service returned:', response.status);
-            return null;
+            if (!gaugeResponse.ok) {
+                console.warn('Could not fetch gauge info:', gaugeResponse.status);
+                return null;
+            }
+
+            const gaugeData = await gaugeResponse.json();
+            const reachId = gaugeData.reachId;
+
+            if (!reachId) {
+                console.log('No reachId found for gauge:', sensor.id);
+                return null;
+            }
+
+            // Now get the NWM streamflow forecast for this reach
+            const nwmUrl = `https://api.water.noaa.gov/nwps/v1/reaches/${reachId}/streamflow`;
+            console.log('Fetching NWM forecast from:', nwmUrl);
+
+            const nwmResponse = await fetch(nwmUrl);
+
+            if (!nwmResponse.ok) {
+                console.warn('NWM service returned:', nwmResponse.status);
+                return null;
+            }
+
+            const nwmData = await nwmResponse.json();
+
+            // Extract short-range forecast (18-hour prediction)
+            if (nwmData.shortRange && nwmData.shortRange.series && nwmData.shortRange.series.data) {
+                const forecastData = nwmData.shortRange.series.data.map(point => ({
+                    time: new Date(point.validTime),
+                    value: point.flow
+                }));
+
+                console.log('NWM forecast found:', forecastData.length, 'points');
+
+                return {
+                    reachId: reachId,
+                    parameter: 'streamflow',
+                    unit: nwmData.shortRange.series.units || 'ft³/s',
+                    data: forecastData,
+                    referenceTime: nwmData.shortRange.series.referenceTime
+                };
+            }
         }
 
-        const data = await response.json();
-
-        if (!data.features || data.features.length === 0) {
-            console.log('No NWM reach found within 5km');
-            return null;
-        }
-
-        const feature = data.features[0];
-        const currentFlow = feature.attributes.streamflow || 10;
-
-        console.log('NWM reach found:', feature.attributes.feature_id, 'Current flow:', currentFlow);
-
-        // Generate 18-hour forecast (mock data - real NWM requires S3/NetCDF access)
-        const now = new Date();
-        const forecast = [];
-
-        for (let i = 0; i < 18; i++) {
-            const time = new Date(now.getTime() + (i * 60 * 60 * 1000));
-            // Add some realistic variation
-            const variation = Math.sin(i * 0.3) * (currentFlow * 0.15) + (Math.random() - 0.5) * (currentFlow * 0.1);
-            const value = Math.max(0.1, currentFlow + variation);
-
-            forecast.push({
-                time: time,
-                value: value
-            });
-        }
-
-        return {
-            featureId: feature.attributes.feature_id,
-            parameter: 'streamflow',
-            unit: 'cms',
-            data: forecast
-        };
+        // For USGS sites, try to find nearest NWM reach (future enhancement)
+        console.log('NWM forecast not available for this location');
+        return null;
     } catch (error) {
         console.error('Error querying NWM:', error);
         return null;

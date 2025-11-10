@@ -466,10 +466,10 @@ async function handleSensorClick(sensor, source) {
 
         // Add chart container for USGS data with NWM forecast
         html += '<div style="margin-top: 20px;">';
-        html += '<h4 style="margin-bottom: 10px; color: #667eea;">Water Data + NWM Forecast</h4>';
+        html += '<h4 style="margin-bottom: 10px; color: #667eea;">Water Data + NWM Forecast (up to 30 days)</h4>';
         html += '<div id="chartLoading" style="text-align: center; padding: 20px; color: #666;">';
         html += '<div class="spinner" style="display: inline-block; margin-bottom: 10px;"></div>';
-        html += '<p>Loading historical data and NWM forecast...</p>';
+        html += '<p>Loading historical data and NWM forecasts...</p>';
         html += '</div>';
         html += '<canvas id="dataChart" style="display: none; max-height: 400px;"></canvas>';
         html += '</div>';
@@ -538,10 +538,10 @@ async function handleSensorClick(sensor, source) {
 
         // Add forecast chart container
         html += '<div style="margin-top: 20px;">';
-        html += '<h4 style="margin-bottom: 10px; color: #667eea;">River Observations + NWM Forecast</h4>';
+        html += '<h4 style="margin-bottom: 10px; color: #667eea;">River Observations + NWM Forecast (up to 30 days)</h4>';
         html += '<div id="chartLoading" style="text-align: center; padding: 20px; color: #666;">';
         html += '<div class="spinner" style="display: inline-block; margin-bottom: 10px;"></div>';
-        html += '<p>Loading observations and NWM forecast...</p>';
+        html += '<p>Loading observations and NWM forecasts...</p>';
         html += '</div>';
         html += '<canvas id="dataChart" style="display: none; max-height: 400px;"></canvas>';
         html += '</div>';
@@ -605,22 +605,57 @@ async function queryNWMForecast(lat, lon, sensor) {
 
             const nwmData = await nwmResponse.json();
 
-            // Extract short-range forecast (18-hour prediction)
+            // Extract ALL forecast ranges: short (18hr), medium (10day), long (30day)
+            const forecasts = {
+                reachId: reachId,
+                parameter: 'streamflow',
+                shortRange: null,
+                mediumRange: null,
+                longRange: null
+            };
+
+            // Short-range: 18-hour forecast
             if (nwmData.shortRange && nwmData.shortRange.series && nwmData.shortRange.series.data) {
-                const forecastData = nwmData.shortRange.series.data.map(point => ({
-                    time: new Date(point.validTime),
-                    value: point.flow
-                }));
-
-                console.log('NWM forecast found:', forecastData.length, 'points');
-
-                return {
-                    reachId: reachId,
-                    parameter: 'streamflow',
+                forecasts.shortRange = {
+                    data: nwmData.shortRange.series.data.map(point => ({
+                        time: new Date(point.validTime),
+                        value: point.flow
+                    })),
                     unit: nwmData.shortRange.series.units || 'ft³/s',
-                    data: forecastData,
                     referenceTime: nwmData.shortRange.series.referenceTime
                 };
+                console.log('NWM short-range forecast:', forecasts.shortRange.data.length, 'points (18 hours)');
+            }
+
+            // Medium-range: 10-day forecast
+            if (nwmData.mediumRange && nwmData.mediumRange.series && nwmData.mediumRange.series.data) {
+                forecasts.mediumRange = {
+                    data: nwmData.mediumRange.series.data.map(point => ({
+                        time: new Date(point.validTime),
+                        value: point.flow
+                    })),
+                    unit: nwmData.mediumRange.series.units || 'ft³/s',
+                    referenceTime: nwmData.mediumRange.series.referenceTime
+                };
+                console.log('NWM medium-range forecast:', forecasts.mediumRange.data.length, 'points (10 days)');
+            }
+
+            // Long-range: 30-day forecast
+            if (nwmData.longRange && nwmData.longRange.series && nwmData.longRange.series.data) {
+                forecasts.longRange = {
+                    data: nwmData.longRange.series.data.map(point => ({
+                        time: new Date(point.validTime),
+                        value: point.flow
+                    })),
+                    unit: nwmData.longRange.series.units || 'ft³/s',
+                    referenceTime: nwmData.longRange.series.referenceTime
+                };
+                console.log('NWM long-range forecast:', forecasts.longRange.data.length, 'points (30 days)');
+            }
+
+            // Return all forecasts if any exist
+            if (forecasts.shortRange || forecasts.mediumRange || forecasts.longRange) {
+                return forecasts;
             }
         }
 
@@ -672,19 +707,52 @@ function displayCombinedUSGSNWMChart(usgsData, nwmData) {
         });
     }
 
-    // Add NWM forecast
+    // Add NWM forecasts (all ranges)
     if (nwmData) {
-        datasets.push({
-            label: `NWM Forecast (${nwmData.unit})`,
-            data: nwmData.data.map(d => ({ x: d.time, y: d.value })),
-            borderColor: 'rgb(156, 39, 176)',
-            backgroundColor: 'rgba(156, 39, 176, 0.1)',
-            borderDash: [5, 5],
-            tension: 0.1,
-            borderWidth: 3,
-            pointRadius: 2,
-            fill: true
-        });
+        // Short-range: 18-hour forecast (purple, dashed)
+        if (nwmData.shortRange) {
+            datasets.push({
+                label: `NWM Short-Range (18hr) - ${nwmData.shortRange.unit}`,
+                data: nwmData.shortRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(156, 39, 176)',
+                backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                borderDash: [5, 5],
+                tension: 0.1,
+                borderWidth: 3,
+                pointRadius: 2,
+                fill: false
+            });
+        }
+
+        // Medium-range: 10-day forecast (orange, dashed)
+        if (nwmData.mediumRange) {
+            datasets.push({
+                label: `NWM Medium-Range (10day) - ${nwmData.mediumRange.unit}`,
+                data: nwmData.mediumRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(255, 152, 0)',
+                backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                borderDash: [10, 5],
+                tension: 0.1,
+                borderWidth: 2,
+                pointRadius: 1,
+                fill: false
+            });
+        }
+
+        // Long-range: 30-day forecast (red, dotted)
+        if (nwmData.longRange) {
+            datasets.push({
+                label: `NWM Long-Range (30day) - ${nwmData.longRange.unit}`,
+                data: nwmData.longRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(244, 67, 54)',
+                backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                borderDash: [2, 2],
+                tension: 0.1,
+                borderWidth: 2,
+                pointRadius: 1,
+                fill: false
+            });
+        }
     }
 
     // Create Y axes
@@ -731,9 +799,12 @@ function displayCombinedUSGSNWMChart(usgsData, nwmData) {
                 x: {
                     type: 'time',
                     time: {
-                        unit: 'hour',
+                        // Auto-detect time unit based on data range
                         displayFormats: {
-                            hour: 'MMM d HH:mm'
+                            hour: 'MMM d HH:mm',
+                            day: 'MMM d',
+                            week: 'MMM d',
+                            month: 'MMM yyyy'
                         }
                     },
                     title: {
@@ -779,19 +850,52 @@ function displayCombinedNOAANWMChart(noaaData, nwmData, sensor) {
         });
     }
 
-    // Add NWM forecast
+    // Add NWM forecasts (all ranges)
     if (nwmData) {
-        datasets.push({
-            label: `NWM Forecast (${nwmData.unit})`,
-            data: nwmData.data.map(d => ({ x: d.time, y: d.value })),
-            borderColor: 'rgb(156, 39, 176)',
-            backgroundColor: 'rgba(156, 39, 176, 0.1)',
-            borderDash: [5, 5],
-            tension: 0.1,
-            borderWidth: 3,
-            pointRadius: 2,
-            fill: true
-        });
+        // Short-range: 18-hour forecast (purple, dashed)
+        if (nwmData.shortRange) {
+            datasets.push({
+                label: `NWM Short-Range (18hr) - ${nwmData.shortRange.unit}`,
+                data: nwmData.shortRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(156, 39, 176)',
+                backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                borderDash: [5, 5],
+                tension: 0.1,
+                borderWidth: 3,
+                pointRadius: 2,
+                fill: false
+            });
+        }
+
+        // Medium-range: 10-day forecast (orange, dashed)
+        if (nwmData.mediumRange) {
+            datasets.push({
+                label: `NWM Medium-Range (10day) - ${nwmData.mediumRange.unit}`,
+                data: nwmData.mediumRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(255, 152, 0)',
+                backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                borderDash: [10, 5],
+                tension: 0.1,
+                borderWidth: 2,
+                pointRadius: 1,
+                fill: false
+            });
+        }
+
+        // Long-range: 30-day forecast (red, dotted)
+        if (nwmData.longRange) {
+            datasets.push({
+                label: `NWM Long-Range (30day) - ${nwmData.longRange.unit}`,
+                data: nwmData.longRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(244, 67, 54)',
+                backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                borderDash: [2, 2],
+                tension: 0.1,
+                borderWidth: 2,
+                pointRadius: 1,
+                fill: false
+            });
+        }
     }
 
     // Add flood stage annotation if available

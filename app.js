@@ -661,7 +661,7 @@ async function queryNWMForecast(lat, lon, sensor) {
             const nwmData = await nwmResponse.json();
 
             // Log the full API response to understand structure
-            console.log('Full NWM API response:', JSON.stringify(nwmData, null, 2));
+            console.log('Full NWM API response for reach', reachId, ':', nwmData);
             console.log('Available forecast ranges:', Object.keys(nwmData));
 
             // Extract ALL forecast ranges: short (18hr), medium (10day), long (30day)
@@ -670,56 +670,87 @@ async function queryNWMForecast(lat, lon, sensor) {
                 parameter: 'streamflow',
                 shortRange: null,
                 mediumRange: null,
+                mediumRangeBlend: null,
                 longRange: null
             };
 
-            // Short-range: 18-hour forecast
-            if (nwmData.shortRange && nwmData.shortRange.series && nwmData.shortRange.series.data) {
-                const originalUnit = nwmData.shortRange.series.units || 'ft³/s';
-                forecasts.shortRange = {
-                    data: nwmData.shortRange.series.data.map(point => ({
-                        time: new Date(point.validTime),
-                        value: convertToCFS(point.flow, originalUnit)
-                    })),
-                    unit: 'ft³/s',
-                    originalUnit: originalUnit,
-                    referenceTime: nwmData.shortRange.series.referenceTime
-                };
-                console.log('NWM short-range forecast:', forecasts.shortRange.data.length, 'points (18 hours), converted from', originalUnit, 'to ft³/s');
-            }
+            // Helper function to extract forecast data from various structures
+            const extractForecastData = (forecastObj, rangeName) => {
+                if (!forecastObj) return null;
 
-            // Medium-range: 10-day forecast
-            if (nwmData.mediumRange && nwmData.mediumRange.series && nwmData.mediumRange.series.data) {
-                const originalUnit = nwmData.mediumRange.series.units || 'ft³/s';
-                forecasts.mediumRange = {
-                    data: nwmData.mediumRange.series.data.map(point => ({
+                // Handle series.data structure (deterministic forecasts)
+                if (forecastObj.series && forecastObj.series.data) {
+                    const originalUnit = forecastObj.series.units || 'ft³/s';
+                    const data = forecastObj.series.data.map(point => ({
                         time: new Date(point.validTime),
                         value: convertToCFS(point.flow, originalUnit)
-                    })),
-                    unit: 'ft³/s',
-                    originalUnit: originalUnit,
-                    referenceTime: nwmData.mediumRange.series.referenceTime
-                };
-                console.log('NWM medium-range forecast:', forecasts.mediumRange.data.length, 'points (10 days), converted from', originalUnit, 'to ft³/s');
-            }
+                    }));
 
-            // Long-range: 30-day forecast
-            if (nwmData.longRange && nwmData.longRange.series && nwmData.longRange.series.data) {
-                const originalUnit = nwmData.longRange.series.units || 'ft³/s';
-                forecasts.longRange = {
-                    data: nwmData.longRange.series.data.map(point => ({
-                        time: new Date(point.validTime),
-                        value: convertToCFS(point.flow, originalUnit)
-                    })),
-                    unit: 'ft³/s',
-                    originalUnit: originalUnit,
-                    referenceTime: nwmData.longRange.series.referenceTime
-                };
-                console.log('NWM long-range forecast:', forecasts.longRange.data.length, 'points (30 days), converted from', originalUnit, 'to ft³/s');
-            }
+                    if (data.length > 0) {
+                        console.log(`NWM ${rangeName}:`, data.length, 'points, converted from', originalUnit, 'to ft³/s, time range:', data[0].time.toISOString(), 'to', data[data.length-1].time.toISOString());
+                        return {
+                            data: data,
+                            unit: 'ft³/s',
+                            originalUnit: originalUnit,
+                            referenceTime: forecastObj.series.referenceTime
+                        };
+                    }
+                }
+
+                // Handle ensemble structure (take first member or compute mean)
+                if (forecastObj.ensemble && Array.isArray(forecastObj.ensemble) && forecastObj.ensemble.length > 0) {
+                    const firstMember = forecastObj.ensemble[0];
+                    if (firstMember.series && firstMember.series.data) {
+                        const originalUnit = firstMember.series.units || 'ft³/s';
+                        const data = firstMember.series.data.map(point => ({
+                            time: new Date(point.validTime),
+                            value: convertToCFS(point.flow, originalUnit)
+                        }));
+
+                        if (data.length > 0) {
+                            console.log(`NWM ${rangeName} (ensemble member 1 of ${forecastObj.ensemble.length}):`, data.length, 'points, converted from', originalUnit, 'to ft³/s');
+                            return {
+                                data: data,
+                                unit: 'ft³/s',
+                                originalUnit: originalUnit,
+                                referenceTime: firstMember.series.referenceTime,
+                                isEnsemble: true,
+                                ensembleCount: forecastObj.ensemble.length
+                            };
+                        }
+                    }
+                }
+
+                return null;
+            };
+
+            // Try different property name variations (camelCase, snake_case, PascalCase)
+            // Short-range: 18-hour deterministic forecast
+            forecasts.shortRange = extractForecastData(
+                nwmData.shortRange || nwmData.short_range || nwmData.ShortRange,
+                'short-range (18hr)'
+            );
+
+            // Medium-range: 10-day ensemble forecast (6 members)
+            forecasts.mediumRange = extractForecastData(
+                nwmData.mediumRange || nwmData.medium_range || nwmData.MediumRange,
+                'medium-range (10day ensemble)'
+            );
+
+            // Medium-range blend: 10-day deterministic forecast (often more accurate than ensemble)
+            forecasts.mediumRangeBlend = extractForecastData(
+                nwmData.mediumRangeBlend || nwmData.medium_range_blend || nwmData.MediumRangeBlend,
+                'medium-range blend (10day deterministic)'
+            );
+
+            // Long-range: 30-day ensemble forecast (4 members)
+            forecasts.longRange = extractForecastData(
+                nwmData.longRange || nwmData.long_range || nwmData.LongRange,
+                'long-range (30day ensemble)'
+            );
 
             // Return all forecasts if any exist
-            if (forecasts.shortRange || forecasts.mediumRange || forecasts.longRange) {
+            if (forecasts.shortRange || forecasts.mediumRange || forecasts.mediumRangeBlend || forecasts.longRange) {
                 return forecasts;
             }
         }
@@ -802,10 +833,13 @@ function displayCombinedUSGSNWMChart(usgsData, nwmData) {
             });
         }
 
-        // Medium-range: 10-day forecast (orange, dashed)
+        // Medium-range ensemble: 10-day forecast (orange, dashed)
         if (nwmData.mediumRange) {
+            const label = nwmData.mediumRange.isEnsemble
+                ? `NWM Medium-Range Ensemble (10day) - ${nwmData.mediumRange.unit}`
+                : `NWM Medium-Range (10day) - ${nwmData.mediumRange.unit}`;
             datasets.push({
-                label: `NWM Medium-Range (10day) - ${nwmData.mediumRange.unit}`,
+                label: label,
                 data: nwmData.mediumRange.data.map(d => ({ x: d.time, y: d.value })),
                 borderColor: 'rgb(255, 152, 0)',
                 backgroundColor: 'rgba(255, 152, 0, 0.1)',
@@ -817,10 +851,28 @@ function displayCombinedUSGSNWMChart(usgsData, nwmData) {
             });
         }
 
+        // Medium-range blend: 10-day deterministic (often more accurate, green, dashed)
+        if (nwmData.mediumRangeBlend) {
+            datasets.push({
+                label: `NWM Medium-Range Blend (10day) - ${nwmData.mediumRangeBlend.unit}`,
+                data: nwmData.mediumRangeBlend.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(76, 175, 80)',
+                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                borderDash: [8, 4],
+                tension: 0.1,
+                borderWidth: 2.5,
+                pointRadius: 1,
+                fill: false
+            });
+        }
+
         // Long-range: 30-day forecast (red, dotted)
         if (nwmData.longRange) {
+            const label = nwmData.longRange.isEnsemble
+                ? `NWM Long-Range Ensemble (30day) - ${nwmData.longRange.unit}`
+                : `NWM Long-Range (30day) - ${nwmData.longRange.unit}`;
             datasets.push({
-                label: `NWM Long-Range (30day) - ${nwmData.longRange.unit}`,
+                label: label,
                 data: nwmData.longRange.data.map(d => ({ x: d.time, y: d.value })),
                 borderColor: 'rgb(244, 67, 54)',
                 backgroundColor: 'rgba(244, 67, 54, 0.1)',
@@ -965,10 +1017,13 @@ function displayCombinedNOAANWMChart(noaaData, nwmData, sensor) {
             });
         }
 
-        // Medium-range: 10-day forecast (orange, dashed)
+        // Medium-range ensemble: 10-day forecast (orange, dashed)
         if (nwmData.mediumRange) {
+            const label = nwmData.mediumRange.isEnsemble
+                ? `NWM Medium-Range Ensemble (10day) - ${nwmData.mediumRange.unit}`
+                : `NWM Medium-Range (10day) - ${nwmData.mediumRange.unit}`;
             datasets.push({
-                label: `NWM Medium-Range (10day) - ${nwmData.mediumRange.unit}`,
+                label: label,
                 data: nwmData.mediumRange.data.map(d => ({ x: d.time, y: d.value })),
                 borderColor: 'rgb(255, 152, 0)',
                 backgroundColor: 'rgba(255, 152, 0, 0.1)',
@@ -980,10 +1035,28 @@ function displayCombinedNOAANWMChart(noaaData, nwmData, sensor) {
             });
         }
 
+        // Medium-range blend: 10-day deterministic (often more accurate, green, dashed)
+        if (nwmData.mediumRangeBlend) {
+            datasets.push({
+                label: `NWM Medium-Range Blend (10day) - ${nwmData.mediumRangeBlend.unit}`,
+                data: nwmData.mediumRangeBlend.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(76, 175, 80)',
+                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                borderDash: [8, 4],
+                tension: 0.1,
+                borderWidth: 2.5,
+                pointRadius: 1,
+                fill: false
+            });
+        }
+
         // Long-range: 30-day forecast (red, dotted)
         if (nwmData.longRange) {
+            const label = nwmData.longRange.isEnsemble
+                ? `NWM Long-Range Ensemble (30day) - ${nwmData.longRange.unit}`
+                : `NWM Long-Range (30day) - ${nwmData.longRange.unit}`;
             datasets.push({
-                label: `NWM Long-Range (30day) - ${nwmData.longRange.unit}`,
+                label: label,
                 data: nwmData.longRange.data.map(d => ({ x: d.time, y: d.value })),
                 borderColor: 'rgb(244, 67, 54)',
                 backgroundColor: 'rgba(244, 67, 54, 0.1)',

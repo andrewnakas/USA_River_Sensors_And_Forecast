@@ -710,7 +710,8 @@ async function queryNWMForecast(lat, lon, sensor) {
                     const response = await fetchWithCORS(url);
 
                     const data = await response.json();
-                    console.log(`${rangeName} API response:`, data);
+                    console.log(`${rangeName} API response keys:`, Object.keys(data));
+                    console.log(`${rangeName} full response:`, JSON.stringify(data, null, 2));
 
                     // Handle series.data structure (deterministic forecasts)
                     if (data.series && data.series.data && data.series.data.length > 0) {

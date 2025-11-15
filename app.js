@@ -260,6 +260,42 @@ function parseUSGSData(timeSeries) {
     return Array.from(sitesMap.values());
 }
 
+// Convert flow measurements to cubic feet per second (cfs / ft³/s)
+function convertToCFS(value, unit) {
+    if (!value || isNaN(value)) return value;
+
+    const normalizedUnit = unit.toLowerCase().replace(/[³^3\s]/g, '');
+
+    // Already in cubic feet per second
+    if (normalizedUnit === 'ft/s' || normalizedUnit === 'cfs' || normalizedUnit === 'ft3/s') {
+        return value;
+    }
+
+    // Thousand cubic feet per second to cfs
+    if (normalizedUnit === 'kcfs' || normalizedUnit === '1000ft/s') {
+        return value * 1000;
+    }
+
+    // Cubic meters per second to cfs (1 m³/s = 35.3147 ft³/s)
+    if (normalizedUnit === 'm/s' || normalizedUnit === 'cms' || normalizedUnit === 'm3/s') {
+        return value * 35.3147;
+    }
+
+    // Gallons per minute to cfs (1 gpm = 0.002228 cfs)
+    if (normalizedUnit === 'gpm' || normalizedUnit === 'gal/min') {
+        return value * 0.002228;
+    }
+
+    // Acre-feet per day to cfs (1 ac-ft/d = 0.5042 cfs)
+    if (normalizedUnit === 'ac-ft/d' || normalizedUnit === 'acrefeet/day') {
+        return value * 0.5042;
+    }
+
+    // If unknown unit, return original value
+    console.warn('Unknown flow unit for conversion:', unit);
+    return value;
+}
+
 // Fetch NOAA metadata (not time series - lazy loading)
 async function fetchNOAAData() {
     try {
@@ -483,16 +519,35 @@ async function handleSensorClick(sensor, source) {
             fetchUSGSTimeSeries(sensor.id),
             queryNWMForecast(sensor.latitude, sensor.longitude, null) // USGS sites don't have reachId in metadata
         ]).then(([usgsData, nwmData]) => {
-            console.log('USGS data:', usgsData, 'NWM forecast:', nwmData);
-            if ((usgsData && usgsData.length > 0) || nwmData) {
+            console.log('USGS time series returned:', usgsData ? usgsData.length + ' series' : 'null');
+            console.log('NWM forecast returned:', nwmData ? 'yes' : 'no');
+
+            // Check if we have any data to display
+            const hasUSGSDischarge = usgsData && usgsData.some(s =>
+                s.variableCode === '00060' ||
+                s.variableName.toLowerCase().includes('discharge') ||
+                s.variableName.toLowerCase().includes('streamflow')
+            );
+
+            if (hasUSGSDischarge || nwmData) {
                 displayCombinedUSGSNWMChart(usgsData, nwmData);
+            } else if (usgsData && usgsData.length > 0) {
+                // Have data but no discharge measurements
+                const availableParams = usgsData.map(s => s.variableName).join(', ');
+                console.warn('No discharge data available. Available parameters:', availableParams);
+                document.getElementById('chartLoading').innerHTML =
+                    '<p style="color: #fd7e14; font-style: italic;">No streamflow data available for this site.</p>' +
+                    '<p style="color: #666; font-size: 0.9em;">Available measurements: ' + availableParams + '</p>';
             } else {
-                console.warn('No data available');
-                document.getElementById('chartLoading').innerHTML = '<p style="color: #666; font-style: italic;">No data available</p>';
+                console.warn('No data available from USGS or NWM');
+                document.getElementById('chartLoading').innerHTML =
+                    '<p style="color: #666; font-style: italic;">No streamflow data available for this site.</p>';
             }
         }).catch(error => {
-            console.error('Error loading data:', error);
-            document.getElementById('chartLoading').innerHTML = '<p style="color: #dc3545; font-style: italic;">Error loading data: ' + error.message + '</p>';
+            console.error('Error loading USGS data:', error);
+            document.getElementById('chartLoading').innerHTML =
+                '<p style="color: #dc3545; font-style: italic;">Error loading data: ' + error.message + '</p>' +
+                '<p style="color: #666; font-size: 0.9em;">Check the console for details.</p>';
         });
 
     } else {
@@ -605,6 +660,10 @@ async function queryNWMForecast(lat, lon, sensor) {
 
             const nwmData = await nwmResponse.json();
 
+            // Log the full API response to understand structure
+            console.log('Full NWM API response:', JSON.stringify(nwmData, null, 2));
+            console.log('Available forecast ranges:', Object.keys(nwmData));
+
             // Extract ALL forecast ranges: short (18hr), medium (10day), long (30day)
             const forecasts = {
                 reachId: reachId,
@@ -616,41 +675,47 @@ async function queryNWMForecast(lat, lon, sensor) {
 
             // Short-range: 18-hour forecast
             if (nwmData.shortRange && nwmData.shortRange.series && nwmData.shortRange.series.data) {
+                const originalUnit = nwmData.shortRange.series.units || 'ft³/s';
                 forecasts.shortRange = {
                     data: nwmData.shortRange.series.data.map(point => ({
                         time: new Date(point.validTime),
-                        value: point.flow
+                        value: convertToCFS(point.flow, originalUnit)
                     })),
-                    unit: nwmData.shortRange.series.units || 'ft³/s',
+                    unit: 'ft³/s',
+                    originalUnit: originalUnit,
                     referenceTime: nwmData.shortRange.series.referenceTime
                 };
-                console.log('NWM short-range forecast:', forecasts.shortRange.data.length, 'points (18 hours)');
+                console.log('NWM short-range forecast:', forecasts.shortRange.data.length, 'points (18 hours), converted from', originalUnit, 'to ft³/s');
             }
 
             // Medium-range: 10-day forecast
             if (nwmData.mediumRange && nwmData.mediumRange.series && nwmData.mediumRange.series.data) {
+                const originalUnit = nwmData.mediumRange.series.units || 'ft³/s';
                 forecasts.mediumRange = {
                     data: nwmData.mediumRange.series.data.map(point => ({
                         time: new Date(point.validTime),
-                        value: point.flow
+                        value: convertToCFS(point.flow, originalUnit)
                     })),
-                    unit: nwmData.mediumRange.series.units || 'ft³/s',
+                    unit: 'ft³/s',
+                    originalUnit: originalUnit,
                     referenceTime: nwmData.mediumRange.series.referenceTime
                 };
-                console.log('NWM medium-range forecast:', forecasts.mediumRange.data.length, 'points (10 days)');
+                console.log('NWM medium-range forecast:', forecasts.mediumRange.data.length, 'points (10 days), converted from', originalUnit, 'to ft³/s');
             }
 
             // Long-range: 30-day forecast
             if (nwmData.longRange && nwmData.longRange.series && nwmData.longRange.series.data) {
+                const originalUnit = nwmData.longRange.series.units || 'ft³/s';
                 forecasts.longRange = {
                     data: nwmData.longRange.series.data.map(point => ({
                         time: new Date(point.validTime),
-                        value: point.flow
+                        value: convertToCFS(point.flow, originalUnit)
                     })),
-                    unit: nwmData.longRange.series.units || 'ft³/s',
+                    unit: 'ft³/s',
+                    originalUnit: originalUnit,
                     referenceTime: nwmData.longRange.series.referenceTime
                 };
-                console.log('NWM long-range forecast:', forecasts.longRange.data.length, 'points (30 days)');
+                console.log('NWM long-range forecast:', forecasts.longRange.data.length, 'points (30 days), converted from', originalUnit, 'to ft³/s');
             }
 
             // Return all forecasts if any exist
@@ -686,25 +751,38 @@ function displayCombinedUSGSNWMChart(usgsData, nwmData) {
 
     const datasets = [];
 
-    // Add USGS historical data
+    // Add USGS historical data - only show discharge (streamflow) data
     if (usgsData && usgsData.length > 0) {
-        usgsData.forEach((series, index) => {
-            const colors = [
-                'rgb(54, 162, 235)',   // Blue
-                'rgb(75, 192, 192)',   // Teal
-            ];
+        // Filter for discharge data only (parameter code 00060)
+        const dischargeSeries = usgsData.filter(series =>
+            series.variableCode === '00060' ||
+            series.variableName.toLowerCase().includes('discharge') ||
+            series.variableName.toLowerCase().includes('streamflow')
+        );
+
+        dischargeSeries.forEach((series, index) => {
+            // Convert values to ft³/s
+            const convertedData = series.data.map(d => ({
+                x: d.time,
+                y: convertToCFS(d.value, series.unit)
+            }));
 
             datasets.push({
-                label: `${series.variableName} (${series.unit})`,
-                data: series.data.map(d => ({ x: d.time, y: d.value })),
-                borderColor: colors[index % colors.length],
-                backgroundColor: colors[index % colors.length].replace('rgb', 'rgba').replace(')', ', 0.1)'),
+                label: `${series.variableName} (ft³/s)`,
+                data: convertedData,
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.1)',
                 tension: 0.1,
                 borderWidth: 2,
                 pointRadius: 1,
-                yAxisID: `y${index}`,
+                fill: false
             });
         });
+
+        // Log if no discharge data found
+        if (dischargeSeries.length === 0) {
+            console.warn('No discharge data found in USGS time series. Available parameters:', usgsData.map(s => s.variableName).join(', '));
+        }
     }
 
     // Add NWM forecasts (all ranges)
@@ -755,24 +833,18 @@ function displayCombinedUSGSNWMChart(usgsData, nwmData) {
         }
     }
 
-    // Create Y axes
-    const yAxes = {};
-    if (usgsData) {
-        usgsData.forEach((series, index) => {
-            yAxes[`y${index}`] = {
-                type: 'linear',
+    // Create single Y-axis for streamflow in ft³/s
+    const yAxes = {
+        y: {
+            type: 'linear',
+            display: true,
+            position: 'left',
+            title: {
                 display: true,
-                position: index === 0 ? 'left' : 'right',
-                title: {
-                    display: true,
-                    text: `${series.variableName} (${series.unit})`
-                },
-                grid: {
-                    drawOnChartArea: index === 0,
-                }
-            };
-        });
-    }
+                text: 'Streamflow (ft³/s)'
+            }
+        }
+    };
 
     const ctx = chartCanvas.getContext('2d');
     currentChart = new Chart(ctx, {
@@ -836,18 +908,44 @@ function displayCombinedNOAANWMChart(noaaData, nwmData, sensor) {
 
     const datasets = [];
 
-    // Add NOAA observed data
+    // Add NOAA observed data - show flow data in ft³/s
     if (noaaData.observed && noaaData.observed.length > 0) {
-        datasets.push({
-            label: `Observed Stage (${noaaData.observedUnits.primary})`,
-            data: noaaData.observed.map(d => ({ x: d.time, y: d.stage })),
-            borderColor: 'rgb(54, 162, 235)',
-            backgroundColor: 'rgba(54, 162, 235, 0.1)',
-            tension: 0.1,
-            pointRadius: 1,
-            borderWidth: 2,
-            fill: false
-        });
+        // Use flow data if available, otherwise use stage
+        const hasFlowData = noaaData.observed.some(d => d.flow !== null && d.flow !== undefined);
+
+        if (hasFlowData) {
+            // Convert flow to ft³/s
+            const flowData = noaaData.observed
+                .filter(d => d.flow !== null && d.flow !== undefined)
+                .map(d => ({
+                    x: d.time,
+                    y: convertToCFS(d.flow, noaaData.observedUnits.secondary)
+                }));
+
+            datasets.push({
+                label: `Observed Flow (ft³/s)`,
+                data: flowData,
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                tension: 0.1,
+                pointRadius: 1,
+                borderWidth: 2,
+                fill: false
+            });
+        } else {
+            // Fallback to stage if no flow data
+            console.warn('No flow data available, showing stage instead');
+            datasets.push({
+                label: `Observed Stage (${noaaData.observedUnits.primary})`,
+                data: noaaData.observed.map(d => ({ x: d.time, y: d.stage })),
+                borderColor: 'rgb(54, 162, 235)',
+                backgroundColor: 'rgba(54, 162, 235, 0.1)',
+                tension: 0.1,
+                pointRadius: 1,
+                borderWidth: 2,
+                fill: false
+            });
+        }
     }
 
     // Add NWM forecasts (all ranges)
@@ -946,9 +1044,12 @@ function displayCombinedNOAANWMChart(noaaData, nwmData, sensor) {
                 x: {
                     type: 'time',
                     time: {
-                        unit: 'hour',
+                        // Auto-detect time unit based on data range
                         displayFormats: {
-                            hour: 'MMM d HH:mm'
+                            hour: 'MMM d HH:mm',
+                            day: 'MMM d',
+                            week: 'MMM d',
+                            month: 'MMM yyyy'
                         }
                     },
                     title: {
@@ -962,7 +1063,7 @@ function displayCombinedNOAANWMChart(noaaData, nwmData, sensor) {
                     position: 'left',
                     title: {
                         display: true,
-                        text: 'Value'
+                        text: 'Streamflow (ft³/s)'
                     }
                 }
             }
@@ -993,19 +1094,23 @@ async function fetchUSGSTimeSeries(siteId) {
         // Fetch all available parameters for the last 7 days
         const url = `https://waterservices.usgs.gov/nwis/iv/?format=json&sites=${siteId}&startDT=${startStr}&endDT=${endStr}`;
 
-        console.log('Fetching time series data:', url);
+        console.log('Fetching USGS time series for site', siteId);
 
         const response = await fetch(url);
 
         if (!response.ok) {
+            console.error(`USGS API returned ${response.status} for site ${siteId}`);
             throw new Error(`Failed to fetch time series: ${response.status}`);
         }
 
         const data = await response.json();
 
         if (!data.value || !data.value.timeSeries || data.value.timeSeries.length === 0) {
+            console.warn(`No time series data returned for USGS site ${siteId}`);
             return [];
         }
+
+        console.log(`USGS site ${siteId} returned ${data.value.timeSeries.length} time series`);
 
         // Parse time series data
         const timeSeriesData = [];
@@ -1037,9 +1142,17 @@ async function fetchUSGSTimeSeries(siteId) {
             }
         });
 
+        // Log what parameters were found
+        if (timeSeriesData.length > 0) {
+            const params = timeSeriesData.map(s => `${s.variableName} (${s.variableCode})`).join(', ');
+            console.log(`USGS site ${siteId} parsed parameters:`, params);
+        } else {
+            console.warn(`USGS site ${siteId} had no valid data points in any time series`);
+        }
+
         return timeSeriesData;
     } catch (error) {
-        console.error('Error fetching time series:', error);
+        console.error(`Error fetching USGS time series for ${siteId}:`, error);
         return [];
     }
 }

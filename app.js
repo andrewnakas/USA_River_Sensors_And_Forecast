@@ -15,7 +15,7 @@ let loadingProgress = {
 // Update loading progress display
 function updateLoadingProgress() {
     const loadingEl = document.getElementById('loading');
-    if (!loadingEl || !isLoading) return;
+    if (!loadingEl) return;
 
     const totalSteps = loadingProgress.usgs.total + loadingProgress.noaa.total;
     const completedSteps = loadingProgress.usgs.current + loadingProgress.noaa.current;
@@ -30,14 +30,17 @@ function updateLoadingProgress() {
         statusText = 'Initializing...';
     }
 
-    loadingEl.innerHTML = `
-        <div class="spinner"></div>
-        <p style="margin-top: 10px; font-size: 14px;">${statusText}</p>
-        <div style="width: 300px; height: 20px; background: rgba(255,255,255,0.2); border-radius: 10px; margin: 10px auto; overflow: hidden;">
-            <div style="width: ${percentage}%; height: 100%; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); transition: width 0.3s;"></div>
-        </div>
-        <p style="font-size: 12px; color: rgba(255,255,255,0.8);">${percentage}%</p>
-    `;
+    const contentEl = loadingEl.querySelector('.loading-content');
+    if (contentEl) {
+        contentEl.innerHTML = `
+            <div class="spinner"></div>
+            <p style="margin-top: 15px; font-size: 18px; font-weight: 600;">${statusText}</p>
+            <div style="width: 400px; height: 25px; background: rgba(255,255,255,0.3); border-radius: 15px; margin: 20px auto; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.2);">
+                <div style="width: ${percentage}%; height: 100%; background: linear-gradient(90deg, #fff 0%, #e0e7ff 100%); transition: width 0.3s; border-radius: 15px;"></div>
+            </div>
+            <p style="font-size: 24px; font-weight: bold; color: white;">${percentage}%</p>
+        `;
+    }
 }
 
 // US States for filtering
@@ -144,12 +147,19 @@ function toggleForecastFilter() {
 
 // Show loading indicator
 function showLoading() {
-    document.getElementById('loadingIndicator').classList.remove('hidden');
+    const loadingEl = document.getElementById('loading');
+    if (loadingEl) {
+        loadingEl.classList.remove('hidden');
+        updateLoadingProgress();
+    }
 }
 
 // Hide loading indicator
 function hideLoading() {
-    document.getElementById('loadingIndicator').classList.add('hidden');
+    const loadingEl = document.getElementById('loading');
+    if (loadingEl) {
+        loadingEl.classList.add('hidden');
+    }
 }
 
 // Update statistics
@@ -819,11 +829,13 @@ async function queryNWMForecast(lat, lon, sensor) {
                         return null;
                     }
 
-                    // Convert data points
-                    const points = extractedData.map(point => ({
-                        time: new Date(point.validTime),
-                        value: convertToCFS(point.flow, originalUnit)
-                    }));
+                    // Convert data points and filter out negative/invalid values
+                    const points = extractedData
+                        .map(point => ({
+                            time: new Date(point.validTime),
+                            value: convertToCFS(point.flow, originalUnit)
+                        }))
+                        .filter(point => point.value >= 0 && !isNaN(point.value));
 
                     const label = isEnsemble ? `${rangeName} (${ensembleCount}-member ensemble mean)` : rangeName;
                     console.log(`✓ ${label}: ${points.length} points, ${originalUnit} → ft³/s, ${points[0].time.toISOString()} to ${points[points.length-1].time.toISOString()}`);
@@ -867,7 +879,128 @@ async function queryNWMForecast(lat, lon, sensor) {
             }
         }
 
-        // For USGS sites, try to find nearest NWM reach (future enhancement)
+        // For USGS sites, try to find nearest NWM reach using spatial query
+        if (lat && lon) {
+            try {
+                console.log(`Searching for NWM reach near USGS site at ${lat}, ${lon}`);
+
+                // Query NWM reaches near this location (within ~5km)
+                const reachUrl = `https://api.water.noaa.gov/nwps/v1/reaches?lat=${lat}&lon=${lon}&distance=5000`;
+                const reachResponse = await fetchWithCORS(reachUrl);
+                const reachData = await reachResponse.json();
+
+                if (reachData.reaches && reachData.reaches.length > 0) {
+                    // Use the closest reach
+                    const nearestReach = reachData.reaches[0];
+                    console.log(`Found nearby NWM reach: ${nearestReach.reachId} (${nearestReach.name || 'Unnamed'})`);
+
+                    const reachId = nearestReach.reachId;
+                    const forecasts = {
+                        reachId: reachId,
+                        parameter: 'streamflow',
+                        shortRange: null,
+                        mediumRange: null,
+                        mediumRangeBlend: null,
+                        longRange: null
+                    };
+
+                    // Use the same helper function as above
+                    const fetchForecastSeries = async (seriesType, rangeName) => {
+                        try {
+                            const url = `https://api.water.noaa.gov/nwps/v1/reaches/${reachId}/streamflow?series=${seriesType}`;
+                            const response = await fetchWithCORS(url);
+                            const apiResponse = await response.json();
+
+                            const propertyMap = {
+                                'short_range': 'shortRange',
+                                'medium_range': 'mediumRange',
+                                'medium_range_blend': 'mediumRangeBlend',
+                                'long_range': 'longRange'
+                            };
+
+                            const dataKey = propertyMap[seriesType];
+                            const forecastData = apiResponse[dataKey];
+
+                            if (!forecastData || Object.keys(forecastData).length === 0) {
+                                return null;
+                            }
+
+                            let extractedData = null;
+                            let originalUnit = 'ft³/s';
+                            let referenceTime = null;
+                            let isEnsemble = false;
+                            let ensembleCount = 0;
+
+                            if (forecastData.data && Array.isArray(forecastData.data) && forecastData.data.length > 0) {
+                                extractedData = forecastData.data;
+                                originalUnit = forecastData.units || 'ft³/s';
+                                referenceTime = forecastData.referenceTime;
+                            } else if (forecastData.mean && forecastData.mean.data && forecastData.mean.data.length > 0) {
+                                extractedData = forecastData.mean.data;
+                                originalUnit = forecastData.mean.units || 'ft³/s';
+                                referenceTime = forecastData.mean.referenceTime;
+                                isEnsemble = true;
+                                ensembleCount = Object.keys(forecastData).filter(k => k.startsWith('member')).length;
+                            } else if (forecastData.member1 && forecastData.member1.data && forecastData.member1.data.length > 0) {
+                                extractedData = forecastData.member1.data;
+                                originalUnit = forecastData.member1.units || 'ft³/s';
+                                referenceTime = forecastData.member1.referenceTime;
+                                isEnsemble = true;
+                                ensembleCount = Object.keys(forecastData).filter(k => k.startsWith('member')).length;
+                            }
+
+                            if (!extractedData) return null;
+
+                            const points = extractedData
+                                .map(point => ({
+                                    time: new Date(point.validTime),
+                                    value: convertToCFS(point.flow, originalUnit)
+                                }))
+                                .filter(point => point.value >= 0 && !isNaN(point.value));
+
+                            if (points.length > 0) {
+                                console.log(`✓ ${rangeName}: ${points.length} points for nearby reach`);
+                                return {
+                                    data: points,
+                                    unit: 'ft³/s',
+                                    originalUnit: originalUnit,
+                                    referenceTime: referenceTime,
+                                    isEnsemble: isEnsemble,
+                                    ensembleCount: ensembleCount
+                                };
+                            }
+                            return null;
+                        } catch (error) {
+                            console.error(`Error fetching ${rangeName} for USGS site:`, error);
+                            return null;
+                        }
+                    };
+
+                    // Fetch all forecast ranges in parallel
+                    const [shortRange, mediumRange, mediumRangeBlend, longRange] = await Promise.all([
+                        fetchForecastSeries('short_range', 'Short-Range'),
+                        fetchForecastSeries('medium_range', 'Medium-Range'),
+                        fetchForecastSeries('medium_range_blend', 'Medium-Range Blend'),
+                        fetchForecastSeries('long_range', 'Long-Range')
+                    ]);
+
+                    forecasts.shortRange = shortRange;
+                    forecasts.mediumRange = mediumRange;
+                    forecasts.mediumRangeBlend = mediumRangeBlend;
+                    forecasts.longRange = longRange;
+
+                    if (shortRange || mediumRange || mediumRangeBlend || longRange) {
+                        console.log('Successfully fetched NWM forecasts for nearby reach');
+                        return forecasts;
+                    }
+                } else {
+                    console.log('No NWM reaches found within 5km of USGS site');
+                }
+            } catch (error) {
+                console.error('Error finding nearby NWM reach:', error);
+            }
+        }
+
         console.log('NWM forecast not available for this location');
         return null;
     } catch (error) {
@@ -1472,11 +1605,12 @@ async function fetchNOAAStageFlow(gaugeId, floodStage) {
         if (data.observed && data.observed.data) {
             console.log(`Processing ${data.observed.data.length} observed data points`);
             data.observed.data.forEach(point => {
-                if (point.primary !== null && point.primary !== -999 && point.primary !== -9999) {
+                if (point.primary !== null && point.primary !== -999 && point.primary !== -9999 && point.primary >= 0) {
+                    const flowValue = point.secondary !== null && point.secondary !== -999 && point.secondary !== -9999 ? point.secondary : null;
                     observedData.push({
                         time: new Date(point.validTime),
                         stage: point.primary,
-                        flow: point.secondary
+                        flow: (flowValue !== null && flowValue >= 0) ? flowValue : null
                     });
                 }
             });
@@ -1488,11 +1622,12 @@ async function fetchNOAAStageFlow(gaugeId, floodStage) {
         if (data.forecast && data.forecast.data) {
             console.log(`Processing ${data.forecast.data.length} forecast data points`);
             data.forecast.data.forEach(point => {
-                if (point.primary !== null && point.primary !== -999 && point.primary !== -9999) {
+                if (point.primary !== null && point.primary !== -999 && point.primary !== -9999 && point.primary >= 0) {
+                    const flowValue = point.secondary !== null && point.secondary !== -999 && point.secondary !== -9999 ? point.secondary : null;
                     forecastData.push({
                         time: new Date(point.validTime),
                         stage: point.primary,
-                        flow: point.secondary
+                        flow: (flowValue !== null && flowValue >= 0) ? flowValue : null
                     });
                 }
             });

@@ -296,15 +296,60 @@ function convertToCFS(value, unit) {
     return value;
 }
 
+// CORS proxy for NOAA API requests (fallback when direct access fails)
+const CORS_PROXIES = [
+    '', // Try direct first
+    'https://corsproxy.io/?', // CORS proxy service
+    'https://api.allorigins.win/raw?url=' // Alternative CORS proxy
+];
+
+// Fetch with CORS proxy fallback
+async function fetchWithCORS(url, options = {}) {
+    let lastError = null;
+
+    for (let i = 0; i < CORS_PROXIES.length; i++) {
+        const proxy = CORS_PROXIES[i];
+        const proxiedUrl = proxy + encodeURIComponent(url);
+        const finalUrl = proxy === '' ? url : proxiedUrl;
+
+        try {
+            if (proxy !== '') {
+                console.log(`Trying CORS proxy ${i}: ${proxy}`);
+            }
+
+            const response = await fetch(finalUrl, options);
+
+            if (!response.ok) {
+                console.warn(`Request to ${finalUrl} returned ${response.status}`);
+                lastError = new Error(`HTTP ${response.status}`);
+                continue;
+            }
+
+            return response;
+        } catch (error) {
+            console.warn(`Fetch failed for ${finalUrl}:`, error.message);
+            lastError = error;
+
+            // If it's a CORS error, try the next proxy
+            if (error.message.includes('CORS') || error.message.includes('Load failed') || error.message.includes('NetworkError')) {
+                continue;
+            }
+
+            // For other errors, throw immediately
+            throw error;
+        }
+    }
+
+    // If all proxies failed, throw the last error
+    throw lastError || new Error('All CORS proxies failed');
+}
+
 // Fetch NOAA metadata (not time series - lazy loading)
 async function fetchNOAAData() {
     try {
         const url = 'https://api.water.noaa.gov/nwps/v1/gauges?status=active';
-        const response = await fetch(url);
-
-        if (!response.ok) {
-            throw new Error(`NOAA API error: ${response.status}`);
-        }
+        console.log('Fetching NOAA gauges...');
+        const response = await fetchWithCORS(url);
 
         const data = await response.json();
 
@@ -316,6 +361,7 @@ async function fetchNOAAData() {
         }
     } catch (error) {
         console.error('Error fetching NOAA data:', error);
+        console.error('Failed to fetch NOAA gauges. CORS proxies may be unavailable.');
         noaaData = [];
     }
 }
@@ -632,12 +678,7 @@ async function queryNWMForecast(lat, lon, sensor) {
         if (sensor && sensor.id) {
             // First get the gauge info to find the reachId
             const gaugeUrl = `https://api.water.noaa.gov/nwps/v1/gauges/${sensor.id}`;
-            const gaugeResponse = await fetch(gaugeUrl);
-
-            if (!gaugeResponse.ok) {
-                console.warn('Could not fetch gauge info:', gaugeResponse.status);
-                return null;
-            }
+            const gaugeResponse = await fetchWithCORS(gaugeUrl);
 
             const gaugeData = await gaugeResponse.json();
             const reachId = gaugeData.reachId;
@@ -666,11 +707,7 @@ async function queryNWMForecast(lat, lon, sensor) {
                     const url = `https://api.water.noaa.gov/nwps/v1/reaches/${reachId}/streamflow?series=${seriesType}`;
                     console.log(`Fetching ${rangeName}:`, url);
 
-                    const response = await fetch(url);
-                    if (!response.ok) {
-                        console.warn(`${rangeName} returned ${response.status}`);
-                        return null;
-                    }
+                    const response = await fetchWithCORS(url);
 
                     const data = await response.json();
                     console.log(`${rangeName} API response:`, data);
@@ -1336,11 +1373,7 @@ async function fetchNOAAStageFlow(gaugeId, floodStage) {
 
         console.log('Fetching NOAA stage/flow data:', url);
 
-        const response = await fetch(url);
-
-        if (!response.ok) {
-            throw new Error(`Failed to fetch NOAA data: ${response.status}`);
-        }
+        const response = await fetchWithCORS(url);
 
         const data = await response.json();
 

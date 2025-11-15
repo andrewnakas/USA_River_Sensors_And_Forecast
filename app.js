@@ -98,6 +98,69 @@ function initMap() {
 
     map.addLayer(usgsLayer);
     map.addLayer(noaaLayer);
+
+    // Add click listener to map for NWM forecast at any location
+    map.on('click', handleMapClick);
+}
+
+// Handle map click to fetch NWM forecast at clicked location
+async function handleMapClick(e) {
+    const lat = e.latlng.lat;
+    const lon = e.latlng.lng;
+
+    console.log(`Map clicked at: ${lat}, ${lon}`);
+
+    // Add a temporary marker at clicked location
+    const marker = L.circleMarker([lat, lon], {
+        radius: 8,
+        fillColor: '#ffd700',
+        color: '#fff',
+        weight: 2,
+        opacity: 1,
+        fillOpacity: 0.9
+    }).addTo(map);
+
+    marker.bindPopup('<div class="spinner"></div><p>Loading NWM forecast...</p>').openPopup();
+
+    try {
+        // Query for NWM forecast at this location
+        const nwmData = await queryNWMForecast(lat, lon, null);
+
+        if (nwmData) {
+            // Show forecast in info panel
+            const panel = document.getElementById('infoPanel');
+            const content = document.getElementById('infoPanelContent');
+
+            let html = '<h3>🌊 NWM River Forecast</h3>';
+            html += '<table style="width: 100%; margin-bottom: 20px;">';
+            html += `<tr><td><strong>Location:</strong></td><td>${lat.toFixed(4)}, ${lon.toFixed(4)}</td></tr>`;
+            html += `<tr><td><strong>Reach ID:</strong></td><td>${nwmData.reachId}</td></tr>`;
+            html += '</table>';
+
+            html += '<div style="margin-top: 20px;">';
+            html += '<h4 style="margin-bottom: 10px; color: #667eea;">NWM Streamflow Forecast (up to 30 days)</h4>';
+            html += '<div id="chartLoading" style="text-align: center; padding: 20px; color: #666;">';
+            html += '<p>Rendering forecast chart...</p>';
+            html += '</div>';
+            html += '<canvas id="dataChart" style="display: none; max-height: 400px;"></canvas>';
+            html += '</div>';
+
+            content.innerHTML = html;
+            panel.classList.remove('hidden');
+
+            // Display NWM-only chart
+            displayNWMOnlyChart(nwmData);
+
+            marker.bindPopup(`<b>NWM Forecast Location</b><br>Reach ID: ${nwmData.reachId}`).openPopup();
+        } else {
+            marker.bindPopup('<b>No NWM data available</b><br>No river reach found within 5km').openPopup();
+            setTimeout(() => map.removeLayer(marker), 3000);
+        }
+    } catch (error) {
+        console.error('Error fetching NWM forecast:', error);
+        marker.bindPopup('<b>Error loading forecast</b>').openPopup();
+        setTimeout(() => map.removeLayer(marker), 3000);
+    }
 }
 
 // Populate state filter dropdown
@@ -202,10 +265,30 @@ async function loadData() {
 // Fetch USGS metadata (not time series - lazy loading)
 async function fetchUSGSData() {
     try {
-        // Query each state individually for better reliability
-        const states = Object.keys(US_STATES);
-
         loadingProgress.usgs.status = 'Loading';
+        loadingProgress.usgs.total = 1;
+        updateLoadingProgress();
+
+        // First, try to load from pre-fetched JSON file
+        console.log('Attempting to load USGS stations from file...');
+        try {
+            const response = await fetch('usgs-stations.json');
+            if (response.ok) {
+                const data = await response.json();
+                usgsData = data;
+                console.log(`✓ Loaded ${usgsData.length} USGS sites from pre-fetched file`);
+
+                loadingProgress.usgs.current = 1;
+                loadingProgress.usgs.status = 'Complete';
+                updateLoadingProgress();
+                return;
+            }
+        } catch (fileError) {
+            console.log('Pre-fetched USGS file not found, falling back to live API...');
+        }
+
+        // Fall back to live API fetching
+        const states = Object.keys(US_STATES);
         loadingProgress.usgs.total = states.length;
         updateLoadingProgress();
 
@@ -405,8 +488,28 @@ async function fetchWithCORS(url, options = {}) {
 async function fetchNOAAData() {
     try {
         loadingProgress.noaa.status = 'Loading';
+        loadingProgress.noaa.total = 1;
         updateLoadingProgress();
 
+        // First, try to load from pre-fetched JSON file
+        console.log('Attempting to load NOAA stations from file...');
+        try {
+            const response = await fetch('noaa-stations.json');
+            if (response.ok) {
+                const data = await response.json();
+                noaaData = data;
+                console.log(`✓ Loaded ${noaaData.length} NOAA gauges from pre-fetched file`);
+
+                loadingProgress.noaa.current = 1;
+                loadingProgress.noaa.status = 'Complete';
+                updateLoadingProgress();
+                return;
+            }
+        } catch (fileError) {
+            console.log('Pre-fetched NOAA file not found, falling back to live API...');
+        }
+
+        // Fall back to live API fetching
         const url = 'https://api.water.noaa.gov/nwps/v1/gauges?status=active';
         console.log('Fetching NOAA gauges...');
         const response = await fetchWithCORS(url);
@@ -1182,6 +1285,144 @@ function displayCombinedUSGSNWMChart(usgsData, nwmData) {
                     }
                 },
                 ...yAxes
+            }
+        }
+    });
+}
+
+// Display NWM-only chart (for map clicks)
+function displayNWMOnlyChart(nwmData) {
+    const chartCanvas = document.getElementById('dataChart');
+    const chartLoading = document.getElementById('chartLoading');
+
+    if (!chartCanvas) return;
+
+    // Destroy previous chart
+    if (currentChart) {
+        currentChart.destroy();
+        currentChart = null;
+    }
+
+    chartLoading.style.display = 'none';
+    chartCanvas.style.display = 'block';
+
+    const datasets = [];
+
+    // Add NWM forecasts (all ranges)
+    if (nwmData) {
+        // Short-range: 18-hour forecast (purple, dashed)
+        if (nwmData.shortRange) {
+            datasets.push({
+                label: `Short-Range (18hr) - ${nwmData.shortRange.unit}`,
+                data: nwmData.shortRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(156, 39, 176)',
+                backgroundColor: 'rgba(156, 39, 176, 0.1)',
+                borderDash: [5, 5],
+                tension: 0.1,
+                borderWidth: 3,
+                pointRadius: 2,
+                fill: false
+            });
+        }
+
+        // Medium-range ensemble: 10-day forecast (orange, dashed)
+        if (nwmData.mediumRange) {
+            const label = nwmData.mediumRange.isEnsemble
+                ? `Medium-Range Ensemble (10day) - ${nwmData.mediumRange.unit}`
+                : `Medium-Range (10day) - ${nwmData.mediumRange.unit}`;
+            datasets.push({
+                label: label,
+                data: nwmData.mediumRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(255, 152, 0)',
+                backgroundColor: 'rgba(255, 152, 0, 0.1)',
+                borderDash: [10, 5],
+                tension: 0.1,
+                borderWidth: 2,
+                pointRadius: 1,
+                fill: false
+            });
+        }
+
+        // Medium-range blend: 10-day deterministic (green, dashed)
+        if (nwmData.mediumRangeBlend) {
+            datasets.push({
+                label: `Medium-Range Blend (10day) - ${nwmData.mediumRangeBlend.unit}`,
+                data: nwmData.mediumRangeBlend.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(76, 175, 80)',
+                backgroundColor: 'rgba(76, 175, 80, 0.1)',
+                borderDash: [8, 4],
+                tension: 0.1,
+                borderWidth: 2.5,
+                pointRadius: 1,
+                fill: false
+            });
+        }
+
+        // Long-range: 30-day forecast (red, dotted)
+        if (nwmData.longRange) {
+            const label = nwmData.longRange.isEnsemble
+                ? `Long-Range Ensemble (30day) - ${nwmData.longRange.unit}`
+                : `Long-Range (30day) - ${nwmData.longRange.unit}`;
+            datasets.push({
+                label: label,
+                data: nwmData.longRange.data.map(d => ({ x: d.time, y: d.value })),
+                borderColor: 'rgb(244, 67, 54)',
+                backgroundColor: 'rgba(244, 67, 54, 0.1)',
+                borderDash: [2, 2],
+                tension: 0.1,
+                borderWidth: 2,
+                pointRadius: 1,
+                fill: false
+            });
+        }
+    }
+
+    const ctx = chartCanvas.getContext('2d');
+    currentChart = new Chart(ctx, {
+        type: 'line',
+        data: { datasets },
+        options: {
+            responsive: true,
+            maintainAspectRatio: true,
+            interaction: {
+                mode: 'index',
+                intersect: false,
+            },
+            plugins: {
+                legend: {
+                    display: true,
+                    position: 'top',
+                },
+                tooltip: {
+                    mode: 'index',
+                    intersect: false
+                }
+            },
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        displayFormats: {
+                            hour: 'MMM d HH:mm',
+                            day: 'MMM d',
+                            week: 'MMM d',
+                            month: 'MMM yyyy'
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: 'Date/Time'
+                    }
+                },
+                y: {
+                    type: 'linear',
+                    display: true,
+                    position: 'left',
+                    title: {
+                        display: true,
+                        text: 'Streamflow (ft³/s)'
+                    }
+                }
             }
         }
     });

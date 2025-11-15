@@ -647,24 +647,10 @@ async function queryNWMForecast(lat, lon, sensor) {
                 return null;
             }
 
-            // Now get the NWM streamflow forecast for this reach
-            const nwmUrl = `https://api.water.noaa.gov/nwps/v1/reaches/${reachId}/streamflow`;
-            console.log('Fetching NWM forecast from:', nwmUrl);
+            // Fetch ALL NWM forecast ranges using separate API calls with series parameter
+            // Each series type requires a separate API call
+            console.log('Fetching NWM forecasts for reach:', reachId);
 
-            const nwmResponse = await fetch(nwmUrl);
-
-            if (!nwmResponse.ok) {
-                console.warn('NWM service returned:', nwmResponse.status);
-                return null;
-            }
-
-            const nwmData = await nwmResponse.json();
-
-            // Log the full API response to understand structure
-            console.log('Full NWM API response for reach', reachId, ':', nwmData);
-            console.log('Available forecast ranges:', Object.keys(nwmData));
-
-            // Extract ALL forecast ranges: short (18hr), medium (10day), long (30day)
             const forecasts = {
                 reachId: reachId,
                 parameter: 'streamflow',
@@ -674,83 +660,89 @@ async function queryNWMForecast(lat, lon, sensor) {
                 longRange: null
             };
 
-            // Helper function to extract forecast data from various structures
-            const extractForecastData = (forecastObj, rangeName) => {
-                if (!forecastObj) return null;
+            // Helper function to fetch and extract forecast data for a specific series
+            const fetchForecastSeries = async (seriesType, rangeName) => {
+                try {
+                    const url = `https://api.water.noaa.gov/nwps/v1/reaches/${reachId}/streamflow?series=${seriesType}`;
+                    console.log(`Fetching ${rangeName}:`, url);
 
-                // Handle series.data structure (deterministic forecasts)
-                if (forecastObj.series && forecastObj.series.data) {
-                    const originalUnit = forecastObj.series.units || 'ft³/s';
-                    const data = forecastObj.series.data.map(point => ({
-                        time: new Date(point.validTime),
-                        value: convertToCFS(point.flow, originalUnit)
-                    }));
-
-                    if (data.length > 0) {
-                        console.log(`NWM ${rangeName}:`, data.length, 'points, converted from', originalUnit, 'to ft³/s, time range:', data[0].time.toISOString(), 'to', data[data.length-1].time.toISOString());
-                        return {
-                            data: data,
-                            unit: 'ft³/s',
-                            originalUnit: originalUnit,
-                            referenceTime: forecastObj.series.referenceTime
-                        };
+                    const response = await fetch(url);
+                    if (!response.ok) {
+                        console.warn(`${rangeName} returned ${response.status}`);
+                        return null;
                     }
-                }
 
-                // Handle ensemble structure (take first member or compute mean)
-                if (forecastObj.ensemble && Array.isArray(forecastObj.ensemble) && forecastObj.ensemble.length > 0) {
-                    const firstMember = forecastObj.ensemble[0];
-                    if (firstMember.series && firstMember.series.data) {
-                        const originalUnit = firstMember.series.units || 'ft³/s';
-                        const data = firstMember.series.data.map(point => ({
+                    const data = await response.json();
+                    console.log(`${rangeName} API response:`, data);
+
+                    // Handle series.data structure (deterministic forecasts)
+                    if (data.series && data.series.data && data.series.data.length > 0) {
+                        const originalUnit = data.series.units || 'ft³/s';
+                        const points = data.series.data.map(point => ({
                             time: new Date(point.validTime),
                             value: convertToCFS(point.flow, originalUnit)
                         }));
 
-                        if (data.length > 0) {
-                            console.log(`NWM ${rangeName} (ensemble member 1 of ${forecastObj.ensemble.length}):`, data.length, 'points, converted from', originalUnit, 'to ft³/s');
+                        console.log(`✓ ${rangeName}: ${points.length} points, ${originalUnit} → ft³/s, ${points[0].time.toISOString()} to ${points[points.length-1].time.toISOString()}`);
+                        return {
+                            data: points,
+                            unit: 'ft³/s',
+                            originalUnit: originalUnit,
+                            referenceTime: data.series.referenceTime
+                        };
+                    }
+
+                    // Handle ensemble structure (extract first member)
+                    if (data.ensemble && Array.isArray(data.ensemble) && data.ensemble.length > 0) {
+                        const firstMember = data.ensemble[0];
+                        if (firstMember.series && firstMember.series.data && firstMember.series.data.length > 0) {
+                            const originalUnit = firstMember.series.units || 'ft³/s';
+                            const points = firstMember.series.data.map(point => ({
+                                time: new Date(point.validTime),
+                                value: convertToCFS(point.flow, originalUnit)
+                            }));
+
+                            console.log(`✓ ${rangeName} (ensemble member 1 of ${data.ensemble.length}): ${points.length} points, ${originalUnit} → ft³/s`);
                             return {
-                                data: data,
+                                data: points,
                                 unit: 'ft³/s',
                                 originalUnit: originalUnit,
                                 referenceTime: firstMember.series.referenceTime,
                                 isEnsemble: true,
-                                ensembleCount: forecastObj.ensemble.length
+                                ensembleCount: data.ensemble.length
                             };
                         }
                     }
-                }
 
-                return null;
+                    console.warn(`${rangeName}: No valid data in response`);
+                    return null;
+                } catch (error) {
+                    console.error(`Error fetching ${rangeName}:`, error);
+                    return null;
+                }
             };
 
-            // Try different property name variations (camelCase, snake_case, PascalCase)
-            // Short-range: 18-hour deterministic forecast
-            forecasts.shortRange = extractForecastData(
-                nwmData.shortRange || nwmData.short_range || nwmData.ShortRange,
-                'short-range (18hr)'
-            );
+            // Fetch all forecast ranges in parallel
+            const [shortRange, mediumRange, mediumRangeBlend, longRange] = await Promise.all([
+                fetchForecastSeries('short_range', 'Short-Range (18hr)'),
+                fetchForecastSeries('medium_range', 'Medium-Range Ensemble (10day)'),
+                fetchForecastSeries('medium_range_blend', 'Medium-Range Blend (10day)'),
+                fetchForecastSeries('long_range', 'Long-Range Ensemble (30day)')
+            ]);
 
-            // Medium-range: 10-day ensemble forecast (6 members)
-            forecasts.mediumRange = extractForecastData(
-                nwmData.mediumRange || nwmData.medium_range || nwmData.MediumRange,
-                'medium-range (10day ensemble)'
-            );
+            forecasts.shortRange = shortRange;
+            forecasts.mediumRange = mediumRange;
+            forecasts.mediumRangeBlend = mediumRangeBlend;
+            forecasts.longRange = longRange;
 
-            // Medium-range blend: 10-day deterministic forecast (often more accurate than ensemble)
-            forecasts.mediumRangeBlend = extractForecastData(
-                nwmData.mediumRangeBlend || nwmData.medium_range_blend || nwmData.MediumRangeBlend,
-                'medium-range blend (10day deterministic)'
-            );
-
-            // Long-range: 30-day ensemble forecast (4 members)
-            forecasts.longRange = extractForecastData(
-                nwmData.longRange || nwmData.long_range || nwmData.LongRange,
-                'long-range (30day ensemble)'
-            );
-
-            // Return all forecasts if any exist
-            if (forecasts.shortRange || forecasts.mediumRange || forecasts.mediumRangeBlend || forecasts.longRange) {
+            // Return forecasts if any exist
+            if (shortRange || mediumRange || mediumRangeBlend || longRange) {
+                console.log('Successfully fetched NWM forecasts:', {
+                    shortRange: !!shortRange,
+                    mediumRange: !!mediumRange,
+                    mediumRangeBlend: !!mediumRangeBlend,
+                    longRange: !!longRange
+                });
                 return forecasts;
             }
         }

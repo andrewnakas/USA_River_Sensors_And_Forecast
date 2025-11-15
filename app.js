@@ -6,6 +6,40 @@ let usgsData = [];
 let noaaData = [];
 let isLoading = false;
 
+// Loading progress tracking
+let loadingProgress = {
+    usgs: { current: 0, total: 50, status: 'Pending' },
+    noaa: { current: 0, total: 1, status: 'Pending' }
+};
+
+// Update loading progress display
+function updateLoadingProgress() {
+    const loadingEl = document.getElementById('loading');
+    if (!loadingEl || !isLoading) return;
+
+    const totalSteps = loadingProgress.usgs.total + loadingProgress.noaa.total;
+    const completedSteps = loadingProgress.usgs.current + loadingProgress.noaa.current;
+    const percentage = Math.round((completedSteps / totalSteps) * 100);
+
+    let statusText = '';
+    if (loadingProgress.usgs.status === 'Loading') {
+        statusText = `Loading USGS data: ${loadingProgress.usgs.current}/${loadingProgress.usgs.total} states`;
+    } else if (loadingProgress.noaa.status === 'Loading') {
+        statusText = 'Loading NOAA gauges...';
+    } else {
+        statusText = 'Initializing...';
+    }
+
+    loadingEl.innerHTML = `
+        <div class="spinner"></div>
+        <p style="margin-top: 10px; font-size: 14px;">${statusText}</p>
+        <div style="width: 300px; height: 20px; background: rgba(255,255,255,0.2); border-radius: 10px; margin: 10px auto; overflow: hidden;">
+            <div style="width: ${percentage}%; height: 100%; background: linear-gradient(90deg, #667eea 0%, #764ba2 100%); transition: width 0.3s;"></div>
+        </div>
+        <p style="font-size: 12px; color: rgba(255,255,255,0.8);">${percentage}%</p>
+    `;
+}
+
 // US States for filtering
 const US_STATES = {
     'AL': 'Alabama', 'AK': 'Alaska', 'AZ': 'Arizona', 'AR': 'Arkansas', 'CA': 'California',
@@ -161,6 +195,10 @@ async function fetchUSGSData() {
         // Query each state individually for better reliability
         const states = Object.keys(US_STATES);
 
+        loadingProgress.usgs.status = 'Loading';
+        loadingProgress.usgs.total = states.length;
+        updateLoadingProgress();
+
         console.log(`Fetching USGS data for ${states.length} states...`);
 
         // Fetch data for each state
@@ -183,6 +221,8 @@ async function fetchUSGSData() {
                 if (!response.ok) {
                     console.warn(`USGS API error for ${stateCode}: ${response.status}`);
                     errorCount++;
+                    loadingProgress.usgs.current = i + 1;
+                    updateLoadingProgress();
                     continue; // Skip this state and continue with others
                 }
 
@@ -193,14 +233,21 @@ async function fetchUSGSData() {
                     successCount++;
                 }
 
+                loadingProgress.usgs.current = i + 1;
+                updateLoadingProgress();
+
                 // Delay between requests to avoid rate limiting
                 await new Promise(resolve => setTimeout(resolve, 100));
             } catch (error) {
                 console.warn(`Error fetching ${stateCode}:`, error);
                 errorCount++;
+                loadingProgress.usgs.current = i + 1;
+                updateLoadingProgress();
                 continue; // Continue with next state
             }
         }
+
+        loadingProgress.usgs.status = 'Complete';
 
         console.log(`USGS fetch complete: ${successCount} states succeeded, ${errorCount} failed`);
 
@@ -347,6 +394,9 @@ async function fetchWithCORS(url, options = {}) {
 // Fetch NOAA metadata (not time series - lazy loading)
 async function fetchNOAAData() {
     try {
+        loadingProgress.noaa.status = 'Loading';
+        updateLoadingProgress();
+
         const url = 'https://api.water.noaa.gov/nwps/v1/gauges?status=active';
         console.log('Fetching NOAA gauges...');
         const response = await fetchWithCORS(url);
@@ -359,10 +409,17 @@ async function fetchNOAAData() {
         } else {
             noaaData = [];
         }
+
+        loadingProgress.noaa.current = 1;
+        loadingProgress.noaa.status = 'Complete';
+        updateLoadingProgress();
     } catch (error) {
         console.error('Error fetching NOAA data:', error);
         console.error('Failed to fetch NOAA gauges. CORS proxies may be unavailable.');
         noaaData = [];
+        loadingProgress.noaa.current = 1;
+        loadingProgress.noaa.status = 'Failed';
+        updateLoadingProgress();
     }
 }
 
@@ -708,52 +765,77 @@ async function queryNWMForecast(lat, lon, sensor) {
                     console.log(`Fetching ${rangeName}:`, url);
 
                     const response = await fetchWithCORS(url);
+                    const apiResponse = await response.json();
 
-                    const data = await response.json();
-                    console.log(`${rangeName} API response keys:`, Object.keys(data));
-                    console.log(`${rangeName} full response:`, JSON.stringify(data, null, 2));
+                    // Map series parameter to response property
+                    const propertyMap = {
+                        'short_range': 'shortRange',
+                        'medium_range': 'mediumRange',
+                        'medium_range_blend': 'mediumRangeBlend',
+                        'long_range': 'longRange'
+                    };
 
-                    // Handle series.data structure (deterministic forecasts)
-                    if (data.series && data.series.data && data.series.data.length > 0) {
-                        const originalUnit = data.series.units || 'ft³/s';
-                        const points = data.series.data.map(point => ({
-                            time: new Date(point.validTime),
-                            value: convertToCFS(point.flow, originalUnit)
-                        }));
+                    const dataKey = propertyMap[seriesType];
+                    const forecastData = apiResponse[dataKey];
 
-                        console.log(`✓ ${rangeName}: ${points.length} points, ${originalUnit} → ft³/s, ${points[0].time.toISOString()} to ${points[points.length-1].time.toISOString()}`);
-                        return {
-                            data: points,
-                            unit: 'ft³/s',
-                            originalUnit: originalUnit,
-                            referenceTime: data.series.referenceTime
-                        };
+                    if (!forecastData || Object.keys(forecastData).length === 0) {
+                        console.warn(`${rangeName}: No data in ${dataKey}`);
+                        return null;
                     }
 
-                    // Handle ensemble structure (extract first member)
-                    if (data.ensemble && Array.isArray(data.ensemble) && data.ensemble.length > 0) {
-                        const firstMember = data.ensemble[0];
-                        if (firstMember.series && firstMember.series.data && firstMember.series.data.length > 0) {
-                            const originalUnit = firstMember.series.units || 'ft³/s';
-                            const points = firstMember.series.data.map(point => ({
-                                time: new Date(point.validTime),
-                                value: convertToCFS(point.flow, originalUnit)
-                            }));
+                    // Try to extract data from different possible structures
+                    let extractedData = null;
+                    let originalUnit = 'ft³/s';
+                    let referenceTime = null;
+                    let isEnsemble = false;
+                    let ensembleCount = 0;
 
-                            console.log(`✓ ${rangeName} (ensemble member 1 of ${data.ensemble.length}): ${points.length} points, ${originalUnit} → ft³/s`);
-                            return {
-                                data: points,
-                                unit: 'ft³/s',
-                                originalUnit: originalUnit,
-                                referenceTime: firstMember.series.referenceTime,
-                                isEnsemble: true,
-                                ensembleCount: data.ensemble.length
-                            };
-                        }
+                    // 1. Check for direct data property (deterministic forecasts like short_range)
+                    if (forecastData.data && Array.isArray(forecastData.data) && forecastData.data.length > 0) {
+                        extractedData = forecastData.data;
+                        originalUnit = forecastData.units || 'ft³/s';
+                        referenceTime = forecastData.referenceTime;
+                    }
+                    // 2. Check for ensemble mean (preferred for ensembles)
+                    else if (forecastData.mean && forecastData.mean.data && forecastData.mean.data.length > 0) {
+                        extractedData = forecastData.mean.data;
+                        originalUnit = forecastData.mean.units || 'ft³/s';
+                        referenceTime = forecastData.mean.referenceTime;
+                        isEnsemble = true;
+                        // Count members
+                        ensembleCount = Object.keys(forecastData).filter(k => k.startsWith('member')).length;
+                    }
+                    // 3. Fall back to first member
+                    else if (forecastData.member1 && forecastData.member1.data && forecastData.member1.data.length > 0) {
+                        extractedData = forecastData.member1.data;
+                        originalUnit = forecastData.member1.units || 'ft³/s';
+                        referenceTime = forecastData.member1.referenceTime;
+                        isEnsemble = true;
+                        ensembleCount = Object.keys(forecastData).filter(k => k.startsWith('member')).length;
                     }
 
-                    console.warn(`${rangeName}: No valid data in response`);
-                    return null;
+                    if (!extractedData) {
+                        console.warn(`${rangeName}: Could not extract data from response`);
+                        return null;
+                    }
+
+                    // Convert data points
+                    const points = extractedData.map(point => ({
+                        time: new Date(point.validTime),
+                        value: convertToCFS(point.flow, originalUnit)
+                    }));
+
+                    const label = isEnsemble ? `${rangeName} (${ensembleCount}-member ensemble mean)` : rangeName;
+                    console.log(`✓ ${label}: ${points.length} points, ${originalUnit} → ft³/s, ${points[0].time.toISOString()} to ${points[points.length-1].time.toISOString()}`);
+
+                    return {
+                        data: points,
+                        unit: 'ft³/s',
+                        originalUnit: originalUnit,
+                        referenceTime: referenceTime,
+                        isEnsemble: isEnsemble,
+                        ensembleCount: ensembleCount
+                    };
                 } catch (error) {
                     console.error(`Error fetching ${rangeName}:`, error);
                     return null;
